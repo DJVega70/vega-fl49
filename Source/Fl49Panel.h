@@ -2,6 +2,7 @@
 #include "DawUI.h"
 #include "Controllers.h"
 #include "Fl49Hub.h"
+#include "Fl49Shared.h"
 
 /**
     VEGA FL49: the FLkey 2 49 on screen, docked on the right (F shows / hides it).
@@ -329,53 +330,18 @@ private:
             }
             void paint (juce::Graphics& g) override
             {
-                auto& fl = owner->owner.fl; auto& session = owner->owner.vs.session;
+                auto& fl = owner->owner.fl;
                 const auto now = juce::Time::getMillisecondCounter();
                 const bool blink = (now / 250) % 2 == 0;
-                auto tracks = session.getTracks (true);
-                const int bank = owner->owner.hui.bankStart;
                 for (int i = 0; i < 16; ++i)
                 {
                     auto r = padRect (i);
-                    const int row = i / 8, col = i % 8;
-                    juce::Colour c (0xff2a2a2a); juce::String label; bool lit = false;
-                    auto* t = bank + col < tracks.size() ? tracks[bank + col] : nullptr;
-                    switch (fl.padMode())
-                    {
-                        case Fl49Hub::PadMode::drums:
-                        {
-                            static const char* gm[] { "KICK", "RIM", "SNARE", "CLAP", "SNR 2", "TOM L", "HAT", "TOM", "PEDAL", "TOM M", "OPEN", "TOM", "TOM H", "CRASH", "TOM", "RIDE" };
-                            const auto map = fl.pads();
-                            const int n = map.note[(size_t) i];
-                            c = row == 0 ? juce::Colour (0xff7a5cff) : juce::Colour (0xff2f9e8f);
-                            label = n >= 36 && n <= 51 && map.channel[(size_t) i] == 10 ? juce::String (gm[n - 36]) : juce::String (n);
-                            break;
-                        }
-                        case Fl49Hub::PadMode::clips:
-                            if (t != nullptr)
-                                if (auto* clip = DawSession::slotClip (*t, fl.sceneOffset + row))
-                                {
-                                    c = DawSession::trackColour (*t);
-                                    label = clip->getName();
-                                    if (DawSession::isSlotPlaying (*clip)) { lit = true; c = juce::Colour (0xff3ddc84); }
-                                    else if (DawSession::isSlotQueued (*clip)) { lit = blink; }
-                                }
-                            break;
-                        case Fl49Hub::PadMode::scenes:
-                            if (row == 0) { if (fl.sceneOffset + col < session.numScenes()) { c = VegaColours::gold; label = "SCENE " + juce::String (fl.sceneOffset + col + 1); } }
-                            else if (t != nullptr) { c = juce::Colour (0xffb04040); label = "STOP"; }
-                            break;
-                    }
-                    const bool hit = now - fl.padHitTime[(size_t) i] < 160;
+                    const auto look = fl49ui::padLook (i, fl, owner->owner.hui, owner->owner.vs.session, blink);
                     const bool teachThis = fl.isTeaching() && fl.teachStep() == i;
-                    auto fill = c.withMultipliedBrightness (lit || hit ? 1.25f : 0.62f);
-                    if (teachThis) fill = blink ? VegaColours::gold : juce::Colour (0xff3a3220);
-                    g.setColour (fill.withAlpha (0.25f)); if (lit || hit) g.fillRoundedRectangle (r.expanded (2.5f), 5.0f);
-                    g.setColour (fill); g.fillRoundedRectangle (r, 4.0f);
-                    g.setColour (juce::Colours::white.withAlpha (hit ? 0.5f : 0.08f)); g.drawRoundedRectangle (r.reduced (0.5f), 4.0f, 1.0f);
-                    g.setColour (fill.getPerceivedBrightness() > 0.55f ? juce::Colour (0xff141414) : VegaColours::text);
+                    fl49ui::drawPad (g, r, look, now - fl.padHitTime[(size_t) i] < 160, teachThis, blink);
+                    g.setColour (look.lit ? juce::Colour (0xff141414) : VegaColours::text.withAlpha (0.9f));
                     g.setFont (VegaFonts::ui (9.5f, true));
-                    g.drawFittedText (teachThis ? juce::String (i + 1) : label, r.reduced (3).toNearestInt(), juce::Justification::centred, 2);
+                    g.drawFittedText (teachThis ? juce::String (i + 1) : look.label, r.reduced (3).toNearestInt(), juce::Justification::centred, 2);
                 }
             }
             void mouseDown (const juce::MouseEvent& e) override
@@ -395,15 +361,12 @@ private:
             {
                 auto* t = track();
                 auto s = slot();
-                g.setColour (juce::Colour (0xff0e0e0e)); g.fillRoundedRectangle (s, 3.0f);
-                if (t == nullptr) return;
+                if (t == nullptr) { g.setColour (juce::Colour (0xff0e0e0e)); g.fillRoundedRectangle (s.withSizeKeepingCentre (5.0f, s.getHeight()), 2.5f); return; }
                 float pos = 0;
                 if (auto vp = t->getVolumePlugin()) pos = HuiSurface::faderPosFromDb (vp->getVolumeDb());
-                auto level = s.withTop (s.getBottom() - s.getHeight() * pos);
                 const auto col = DawSession::trackColour (*t);
-                g.setColour (col.withAlpha (0.7f)); g.fillRoundedRectangle (level, 3.0f);
-                g.setColour (juce::Colour (0xffdddddd)); g.fillRoundedRectangle (juce::Rectangle<float> (s.getCentreX() - 9, level.getY() - 3, 18, 6), 1.5f);
                 const bool sel = t->itemID == owner->owner.vs.selectedTrack;
+                fl49ui::drawFader (g, s, pos, col, sel);
                 g.setColour (sel ? VegaColours::accent : VegaColours::textDim); g.setFont (VegaFonts::ui (10.0f, sel));
                 g.drawFittedText (t->getName(), 0, getHeight() - 16, getWidth(), 14, juce::Justification::centred, 1);
                 if (t->isMuted (false)) { g.setColour (juce::Colour (0xffe8a23a)); g.fillEllipse (2, 2, 6, 6); }

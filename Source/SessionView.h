@@ -43,7 +43,7 @@ public:
         g.fillAll (juce::Colour (0xff17181a));
         g.setColour (juce::Colour (0xff1e1f22)); g.fillRect (0, 0, getWidth(), topH);
         g.setColour (VegaColours::textDim); g.setFont (VegaFonts::ui (10.0f, true));
-        g.drawText ("CLIP LAUNCHER  -  click a clip's triangle to launch it, a scene's triangle to launch the row. Double-click an empty slot on an instrument track for a new clip, or drop audio / MIDI files on a slot.",
+        g.drawText ("CLIP LAUNCHER  -  click a clip's ring to launch it, a scene to launch the row. Double-click an empty slot on an instrument track for a new clip, or drop audio / MIDI files on a slot.",
                     backBtn.getRight() + 100, 0, getWidth() - backBtn.getRight() - 110, topH, juce::Justification::centredLeft, true);
         auto tracks = columns();
         const int scenes = vs.session.numScenes();
@@ -77,7 +77,11 @@ public:
             g.setColour (anyPlaying (*t) ? VegaColours::text : VegaColours::textDim.withAlpha (0.4f));
             g.fillRect (st.withSizeKeepingCentre (9, 9));
         }
-        // scenes column
+        // scenes column (outside the grid's clip region)
+        g.restoreState(); g.saveState();
+        g.reduceClipRegion (area.getRight() + 4, area.getY() - headH, sceneW + 12, area.getHeight() + headH);
+        g.setColour (VegaColours::textDim); g.setFont (VegaFonts::ui (11.0f, true));
+        g.drawText ("SCENE", area.getRight() + 12, area.getY() - headH, sceneW - 60, headH, juce::Justification::centredLeft);
         for (int sIdx = 0; sIdx < scenes; ++sIdx)
         {
             auto r = sceneBounds (sIdx);
@@ -97,6 +101,8 @@ public:
             g.drawText (juce::String (sIdx + 1) + ":" + (name.isNotEmpty() ? name : "Scene " + juce::String (sIdx + 1)).toUpperCase(), box.reduced (10, 0).toNearestInt(), juce::Justification::centredLeft, true);
             if (active) { g.setFont (VegaFonts::ui (9.0f, true)); g.drawText ("ACTIVE", box.reduced (8, 0).toNearestInt(), juce::Justification::centredRight); }
         }
+        g.restoreState(); g.saveState();
+        g.reduceClipRegion (area.withTrimmedTop (-headH).withHeight (area.getHeight() + headH + footH));
         // the box an APC Key 25 (or other launcher controller) is showing
         if (vs.controllerWindow)
             if (auto box = vs.controllerWindow(); ! box.isEmpty())
@@ -260,8 +266,8 @@ private:
 
     static juce::Rectangle<float> ringBounds (juce::Rectangle<float> cell)
     {
-        const float d = juce::jmin (28.0f, cell.getHeight() - 16.0f);
-        return juce::Rectangle<float> (d, d).withCentre (cell.getCentre());
+        const float d = juce::jmin (24.0f, cell.getHeight() - 24.0f);
+        return juce::Rectangle<float> (d, d).withCentre (cell.getCentre().translated (0.0f, 6.0f));   // below the clip's name
     }
     void drawSlot (juce::Graphics& g, te::AudioTrack& t, int sIdx, juce::Rectangle<float> r, juce::Colour col)
     {
