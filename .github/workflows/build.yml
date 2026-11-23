@@ -1,0 +1,132 @@
+name: Build VEGA FL49
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  TE_COMMIT: c6293127cdc0a8488aea2ae0907f4709ee89c228   # Tracktion Engine (GPLv3), pinned
+
+jobs:
+  test:
+    name: Engine self-test (Linux, headless)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libjack-jackd2-dev libfreetype6-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libxi-dev libgl1-mesa-dev libcurl4-openssl-dev
+      - name: Fetch Tracktion Engine
+        run: |
+          git clone --filter=blob:none https://github.com/Tracktion/tracktion_engine.git te
+          cd te && git checkout $TE_COMMIT
+          git -c url."https://github.com/".insteadOf="git@github.com:" submodule update --init --depth 1 modules/juce
+      - name: Build test
+        run: |
+          cmake -B build -DTE_DIR=$PWD/te -DVEGA_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target VegaDAWTest VegaStemHelper -j4
+      - name: Download the Demucs model (for the real stem-separation test)
+        continue-on-error: true
+        run: |
+          curl -fL --retry 3 -o htdemucs-4s.bin "https://huggingface.co/datasets/Retrobear/demucs.cpp/resolve/main/ggml-model-htdemucs-4s-f16.bin"
+          ls -la htdemucs-4s.bin && echo "VEGA_DEMUCS_MODEL=$PWD/htdemucs-4s.bin" >> $GITHUB_ENV
+      - name: Run engine self-test
+        run: build/VegaDAWTest_artefacts/Release/VegaDAWTest
+      - name: Stem helper self-test (real model)
+        if: env.VEGA_DEMUCS_MODEL != ''
+        run: |
+          code=0; build/VegaStemHelper_artefacts/Release/VegaStemHelper --selftest "$VEGA_DEMUCS_MODEL" 2 > helper.log || code=$?
+          grep -v '^PROGRESS' helper.log | tail -3; echo "exit code $code"; grep -q '^DONE' helper.log
+
+  windows:
+    name: Windows app
+    runs-on: windows-2022
+    env:
+      PRODUCT: VEGA FL49
+      PACKAGE: VEGA-FL49
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch Tracktion Engine
+        shell: bash
+        run: |
+          git clone --filter=blob:none https://github.com/Tracktion/tracktion_engine.git te
+          cd te && git checkout $TE_COMMIT
+          git -c url."https://github.com/".insteadOf="git@github.com:" submodule update --init --depth 1 modules/juce
+      - name: Fetch ASIO SDK (optional - builds with WASAPI/DirectSound if unavailable)
+        shell: bash
+        continue-on-error: true
+        run: |
+          curl -fL -o asio.zip "https://www.steinberg.net/asiosdk" && unzip -q asio.zip -d asio
+          dir=$(dirname "$(find asio -name iasiodrv.h | head -1)")
+          [ -n "$dir" ] && echo "ASIO_DIR=$(cd "$dir/.." && pwd -W)" >> $GITHUB_ENV
+      - name: Configure
+        shell: bash
+        run: |
+          EXTRA=""
+          if [ -n "$ASIO_DIR" ]; then EXTRA="-DVEGA_ASIO=ON -DASIO_SDK_DIR=$ASIO_DIR"; echo "Building with ASIO"; fi
+          cmake -B build -G "Visual Studio 17 2022" -A x64 -DTE_DIR="$(pwd -W)/te" -DVEGA_FL49=ON $EXTRA
+      - name: Build
+        run: cmake --build build --config Release --target VegaDAW --parallel
+      - name: Stem separation self-test on Windows (real model, both engine builds)
+        shell: bash
+        run: |
+          curl -fL --retry 3 -o htdemucs-4s.bin "https://huggingface.co/datasets/Retrobear/demucs.cpp/resolve/main/ggml-model-htdemucs-4s-f16.bin"
+          for h in VegaStemHelper VegaStemHelperAVX2; do
+            echo "== $h"
+            code=0; "build/VegaDAW_artefacts/Release/$h.exe" --selftest htdemucs-4s.bin 2 > "$h.log" || code=$?
+            grep -v '^PROGRESS' "$h.log" | tail -3; echo "exit code $code"
+            grep -q '^DONE' "$h.log" || exit 1
+          done
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "build/VegaDAW_artefacts/Release/${{ env.PRODUCT }}.exe" dist/
+          Copy-Item "build/VegaDAW_artefacts/Release/VegaStemHelper.exe", "build/VegaDAW_artefacts/Release/VegaStemHelperAVX2.exe" dist/
+          Copy-Item README.md, LICENSE, TRACKTION_LICENSE.md dist/
+          Compress-Archive -Path dist/* -DestinationPath ${{ env.PACKAGE }}-Windows.zip
+      - name: Build the installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(VegaDAW VERSION ([0-9.]+)\)').Matches[0].Groups[1].Value
+          $edition = if ("${{ env.PACKAGE }}" -eq "VEGA-FL49") { "/DFL49=1" } else { "/DMAIN=1" }
+          & $iscc "/DAppVersion=$ver.${{ github.run_number }}" "/DSrcDir=$PWD\dist" $edition installer\VegaDAW.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "installer-out\${{ env.PACKAGE }}-Setup.exe" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE }}-Windows
+          path: |
+            ${{ env.PACKAGE }}-Windows.zip
+            ${{ env.PACKAGE }}-Setup.exe
+
+  release:
+    name: Publish release
+    needs: [test, windows]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test.result == 'success' && needs.windows.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Collect zips
+        run: |
+          mkdir out
+          find dist \( -name '*.zip' -o -name '*Setup.exe' \) -exec cp {} out/ \;
+          ls -la out
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: VEGA FL49 - build ${{ github.run_number }}
+          make_latest: true
+          body: |
+            **VEGA FL49** - the DAW built around the Novation FLkey 2 49.
+            **Install (recommended):** download `VEGA-FL49-Setup.exe` and run it. It installs to Program Files with Start menu (and optional desktop) shortcuts, and shows up in Settings > Apps for uninstalling. Running a newer Setup updates your install.
+            **Portable:** `VEGA-FL49-Windows.zip`, unzip anywhere and run `VEGA FL49.exe`.
+            Plug in the FLkey 2 49 before starting: VEGA FL49 finds both of its ports by itself.
+          files: |
+            out/*.zip
+            out/*.exe
