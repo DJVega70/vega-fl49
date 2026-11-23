@@ -321,7 +321,19 @@ private:
             const auto tint = t != nullptr ? DawSession::trackColour (*t) : VegaColours::accent;
             g.setColour (VegaColours::textDim);
             g.drawText (i == 8 ? juce::String ("MASTER") : juce::String (hui.bankStart + i + 1), juce::Rectangle<float> (s.getX() - 14, (float) faderArea.getY(), 50, 16), juce::Justification::centred);
-            if (vp == nullptr) { g.setColour (juce::Colour (0xff0c0c0d)); g.fillRoundedRectangle (s.withSizeKeepingCentre (5.0f, s.getHeight()), 2.5f); continue; }
+            if (vp == nullptr)
+            {   // no track on this fader yet: the fader is still there, dimmed
+                g.beginTransparencyLayer (0.35f);
+                fl49ui::drawFader (g, s, HuiSurface::faderPosFromDb (0.0f), VegaColours::textDim, false);
+                fl49ui::drawMeter (g, meterRect (i), -100.0f);
+                g.endTransparencyLayer();
+                auto n = numberTag (i);
+                g.setColour (juce::Colour (0xff3a3b40)); g.drawRoundedRectangle (n, 3.0f, 1.0f);
+                g.setColour (VegaColours::textDim.withAlpha (0.7f)); g.setFont (VegaFonts::ui (10.0f, true));
+                g.drawText ("-", n, juce::Justification::centred);
+                g.setFont (VegaFonts::ui (11.0f, true));
+                continue;
+            }
             fl49ui::drawFader (g, s, HuiSurface::faderPosFromDb (vp->getVolumeDb()), tint, sel || i == 8);
             fl49ui::drawMeter (g, meterRect (i), i == 8 ? masterLevel : meters[(size_t) i].level);
             if (i == 8)

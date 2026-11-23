@@ -45,7 +45,7 @@ private:
     //==========================================================================
     struct Content : public juce::Component
     {
-        static constexpr int totalHeight = 790;
+        static constexpr int totalHeight = 880;   // keep in step with resized(): the faders row ends ~840
         explicit Content (Fl49Panel& p) : owner (p)
         {
             auto seg = [this] (juce::TextButton& b, const juce::String& text, std::function<void()> click)
@@ -94,7 +94,8 @@ private:
             chordMode[4].setTooltip ("Soul: root, 5th, 7th, 9th with the 3rd on top - open Soulful House voicings");
             for (auto& k : knobs) addAndMakeVisible (k);
             for (auto& f : faders) addAndMakeVisible (f);
-            for (int i = 0; i < 8; ++i) { knobs[(size_t) i].index = i; knobs[(size_t) i].owner = this; faders[(size_t) i].index = i; faders[(size_t) i].owner = this; }
+            for (int i = 0; i < 8; ++i) { knobs[(size_t) i].index = i; knobs[(size_t) i].owner = this; }
+            for (int i = 0; i < 9; ++i) { faders[(size_t) i].index = i; faders[(size_t) i].owner = this; }
             pads.owner = this; addAndMakeVisible (pads);
             refresh();
         }
@@ -172,8 +173,8 @@ private:
             y += 14; fadersTitleY = y; y += 24;
             {
                 auto r = row (118);
-                const int fw = r.getWidth() / 8;
-                for (int i = 0; i < 8; ++i) faders[(size_t) i].setBounds (r.getX() + i * fw, r.getY(), fw, r.getHeight());
+                const int fw = r.getWidth() / 9;
+                for (int i = 0; i < 9; ++i) faders[(size_t) i].setBounds (r.getX() + i * fw, r.getY(), fw, r.getHeight());
             }
             footerY = y + 8;
         }
@@ -228,7 +229,7 @@ private:
             g.drawText ("NOTES", keyLabelArea, juce::Justification::centredLeft);
             g.drawText ("CHORDS", chordLabelArea, juce::Justification::centredLeft);
 
-            title (fadersTitleY, "FADERS", "the 8 tracks the faders move");
+            title (fadersTitleY, "FADERS", "the 8 tracks the faders move + master");
             g.setColour (VegaColours::textDim); g.setFont (VegaFonts::ui (10.5f));
             g.drawFittedText (owner.hub.isConnected() ? "Transport, faders, track select and mute / solo run over the FLkey's DAW port (HUI)."
                                                       : "Plug in the FLkey 2 49: the DAW finds both of its ports by itself.",
@@ -354,39 +355,49 @@ private:
         // ---- one of the 8 faders
         struct Fader : public juce::Component
         {
-            int index = 0; Content* owner = nullptr; float startPos = 0;
-            te::AudioTrack* track() { return owner->owner.hui.trackForStrip (index); }
+            int index = 0; Content* owner = nullptr; float startPos = 0;   // index 8 = master
+            te::AudioTrack* track() { return index < 8 ? owner->owner.hui.trackForStrip (index) : nullptr; }
+            te::VolumeAndPanPlugin* volume()
+            {
+                if (index == 8) return owner->owner.vs.edit().getMasterVolumePlugin().get();
+                auto* t = track();
+                return t != nullptr ? t->getVolumePlugin() : nullptr;
+            }
             juce::Rectangle<float> slot() const { return getLocalBounds().toFloat().reduced (getWidth() * 0.5f - 4.0f, 4.0f).withTrimmedBottom (18); }
             void paint (juce::Graphics& g) override
             {
                 auto* t = track();
+                auto* vp = volume();
                 auto s = slot();
-                if (t == nullptr) { g.setColour (juce::Colour (0xff0e0e0e)); g.fillRoundedRectangle (s.withSizeKeepingCentre (5.0f, s.getHeight()), 2.5f); return; }
-                float pos = 0;
-                if (auto vp = t->getVolumePlugin()) pos = HuiSurface::faderPosFromDb (vp->getVolumeDb());
-                const auto col = DawSession::trackColour (*t);
-                const bool sel = t->itemID == owner->owner.vs.selectedTrack;
-                fl49ui::drawFader (g, s, pos, col, sel);
+                if (vp == nullptr)
+                {   // no track on this fader yet: show the fader anyway, dimmed
+                    g.beginTransparencyLayer (0.35f);
+                    fl49ui::drawFader (g, s, HuiSurface::faderPosFromDb (0.0f), VegaColours::textDim, false);
+                    g.endTransparencyLayer();
+                    g.setColour (VegaColours::textDim.withAlpha (0.6f)); g.setFont (VegaFonts::ui (10.0f));
+                    g.drawFittedText (juce::String (owner->owner.hui.bankStart + index + 1), 0, getHeight() - 16, getWidth(), 14, juce::Justification::centred, 1);
+                    return;
+                }
+                const auto col = t != nullptr ? DawSession::trackColour (*t) : VegaColours::accent;
+                const bool sel = t != nullptr ? t->itemID == owner->owner.vs.selectedTrack : true;
+                fl49ui::drawFader (g, s, HuiSurface::faderPosFromDb (vp->getVolumeDb()), col, sel);
                 g.setColour (sel ? VegaColours::accent : VegaColours::textDim); g.setFont (VegaFonts::ui (10.0f, sel));
-                g.drawFittedText (t->getName(), 0, getHeight() - 16, getWidth(), 14, juce::Justification::centred, 1);
-                if (t->isMuted (false)) { g.setColour (juce::Colour (0xffe8a23a)); g.fillEllipse (2, 2, 6, 6); }
-                if (t->isSolo (false)) { g.setColour (juce::Colour (0xff3ddcff)); g.fillEllipse (getWidth() - 8.0f, 2, 6, 6); }
+                g.drawFittedText (t != nullptr ? t->getName() : juce::String ("MASTER"), 0, getHeight() - 16, getWidth(), 14, juce::Justification::centred, 1);
+                if (t != nullptr && t->isMuted (false)) { g.setColour (juce::Colour (0xffe8a23a)); g.fillEllipse (2, 2, 6, 6); }
+                if (t != nullptr && t->isSolo (false)) { g.setColour (juce::Colour (0xff3ddcff)); g.fillEllipse (getWidth() - 8.0f, 2, 6, 6); }
             }
             void mouseDown (const juce::MouseEvent&) override
             {
-                if (auto* t = track())
-                {
-                    owner->owner.vs.selectTrack (t);
-                    if (auto vp = t->getVolumePlugin()) startPos = HuiSurface::faderPosFromDb (vp->getVolumeDb());
-                }
+                if (auto* t = track()) owner->owner.vs.selectTrack (t);
+                if (auto* vp = volume()) startPos = HuiSurface::faderPosFromDb (vp->getVolumeDb());
             }
             void mouseDrag (const juce::MouseEvent& e) override
             {
-                if (auto* t = track())
-                    if (auto vp = t->getVolumePlugin())
-                        vp->setVolumeDb (HuiSurface::dbFromFaderPos (juce::jlimit (0.0f, 1.0f, startPos - e.getDistanceFromDragStartY() / slot().getHeight())));
+                if (auto* vp = volume())
+                    vp->setVolumeDb (HuiSurface::dbFromFaderPos (juce::jlimit (0.0f, 1.0f, startPos - e.getDistanceFromDragStartY() / slot().getHeight())));
                 repaint();
             }
+            void mouseDoubleClick (const juce::MouseEvent&) override { if (auto* vp = volume()) vp->setVolumeDb (0.0f); }
         };
 
         Fl49Panel& owner;
@@ -394,7 +405,7 @@ private:
         juce::TextButton padDrums, padClips, padScenes, sceneUp, sceneDown, teach, resetPads;
         juce::TextButton keyMode[3], chordMode[5];
         juce::ComboBox rootBox, scaleBox;
-        std::array<Knob, 8> knobs; std::array<Fader, 8> faders; Pads pads;
+        std::array<Knob, 8> knobs; std::array<Fader, 9> faders; Pads pads;
         std::array<juce::uint32, 8> touched {};
         juce::Rectangle<int> pluginLabelArea, padInfoArea, keyLabelArea, chordLabelArea;
         int padTitleY = 0, keysTitleY = 0, fadersTitleY = 0, footerY = 0;
