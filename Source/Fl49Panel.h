@@ -288,17 +288,10 @@ private:
             {
                 auto* p = param();
                 const float v = p != nullptr ? p->getCurrentNormalisedValue() : 0.0f;
-                auto kr = juce::Rectangle<float> (0, 0, 46, 46).withCentre ({ getWidth() * 0.5f, 30.0f });
-                const float a0 = -2.4f, a1 = 2.4f, a = a0 + v * (a1 - a0);
-                juce::Path arc; arc.addCentredArc (kr.getCentreX(), kr.getCentreY(), 27, 27, 0, a0, a1, true);
-                g.setColour (juce::Colour (0xff2c2c2c)); g.strokePath (arc, juce::PathStrokeType (3.0f));
-                if (p != nullptr)
-                {
-                    juce::Path on; on.addCentredArc (kr.getCentreX(), kr.getCentreY(), 27, 27, 0, a0, a, true);
-                    const bool recent = juce::Time::getMillisecondCounter() - owner->touched[(size_t) index] < 600;
-                    g.setColour (recent ? VegaColours::accent.brighter (0.3f) : VegaColours::accent); g.strokePath (on, juce::PathStrokeType (3.0f));
-                }
-                vegapaint::knob (g, kr, a, false, p != nullptr ? juce::Colours::white : juce::Colour (0xff555555));
+                auto kr = juce::Rectangle<float> (0, 0, 58, 58).withCentre ({ getWidth() * 0.5f, 30.0f });
+                const float a = vegacontrols::wheelStart + v * (vegacontrols::wheelEnd - vegacontrols::wheelStart);
+                const bool recent = juce::Time::getMillisecondCounter() - owner->touched[(size_t) index] < 600;
+                vegacontrols::paintWheel (g, kr, a, p != nullptr ? v : 0.0f, isMouseOver(), recent || isMouseButtonDown(), p != nullptr ? juce::Colour() : juce::Colour (0xff555555));
                 g.setColour (p != nullptr ? VegaColours::text : VegaColours::textDim); g.setFont (VegaFonts::ui (11.0f, true));
                 juce::String name = p != nullptr ? p->getParameterName() : juce::String ("-");
                 if (owner->owner.hui.encMode != HuiSurface::EncMode::plugin)

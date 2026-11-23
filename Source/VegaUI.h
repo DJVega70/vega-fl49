@@ -11,6 +11,8 @@
 //  Vega Productions — hardware‑style look & feel
 //  (charcoal panel, machined knobs, cyan illuminated switches, OLED)
 // =====================================================================
+#include "ControlStyle.h"
+
 namespace VegaColours
 {
     const juce::Colour background { 0xff1e1e1e };
@@ -46,186 +48,51 @@ namespace vegapaint
 inline void knob (juce::Graphics& g, juce::Rectangle<float> knobR, float angle, bool big = false,
                   juce::Colour pointer = juce::Colours::white, bool hover = false)
 {
-    const auto c = knobR.getCentre();
-    const float r = knobR.getWidth() * 0.5f;
-    {
-        juce::Path sh; sh.addEllipse (knobR.translated (0, big ? 5.0f : 3.0f).expanded (big ? 3.0f : 1.5f));
-        juce::DropShadow (juce::Colours::black.withAlpha (0.75f), big ? 18 : 9, {}).drawForPath (g, sh);
-    }
-    if (big)
-    {
-        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3b3b3b), c.x, knobR.getY(), juce::Colour (0xff121212), c.x, knobR.getBottom(), false));
-        g.fillEllipse (knobR);
-        g.setColour (juce::Colour (0xff4a4a4a)); g.drawEllipse (knobR.reduced (0.5f), 1.0f);
-        knobR = knobR.reduced (r * 0.13f);
-    }
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff353535), c.x - r * 0.4f, c.y - r * 0.6f, juce::Colour (0xff141414), c.x + r * 0.5f, c.y + r * 0.8f, true));
-    g.fillEllipse (knobR);
-    auto face = knobR.reduced (knobR.getWidth() * 0.06f);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff2c2c2c), c.x, face.getY(), juce::Colour (0xff1a1a1a), c.x, face.getBottom(), false));
-    g.fillEllipse (face);
-    g.setColour (juce::Colours::white.withAlpha (0.06f)); g.drawEllipse (face, 1.0f);
-    g.setColour (juce::Colours::black.withAlpha (0.6f)); g.drawEllipse (knobR, 1.0f);
-    const float kr = knobR.getWidth() * 0.5f, p1 = big ? kr * 0.68f : kr * 0.35f, p2 = kr * 0.94f;
-    g.setColour (pointer.withAlpha (0.95f));
-    g.drawLine (c.x + p1 * std::sin (angle), c.y - p1 * std::cos (angle), c.x + p2 * std::sin (angle), c.y - p2 * std::cos (angle), big ? 2.6f : 2.0f);
-    if (hover) { g.setColour (VegaColours::accent.withAlpha (0.12f)); g.drawEllipse (knobR.expanded (2.0f), 1.2f); }
+    // themed (Control Creator): knobR is the body, so the wheel's area grows to leave room for its rail
+    // no rail here: these callers are endless (jog wheel, bank knob) or draw their own scale
+    juce::ignoreUnused (big);
+    auto st = vegacontrols::Theme::get().wheel();
+    st.rail = 0;
+    vegacontrols::paintWheel (g, knobR.withSizeKeepingCentre (knobR.getWidth() / st.size, knobR.getHeight() / st.size), angle, -1.0f, hover, false,
+                              pointer == juce::Colours::white || pointer.isTransparent() ? juce::Colour() : pointer, &st);
 }
 
 /** The 11 tick marks around a knob */
-inline void knobTicks (juce::Graphics& g, juce::Rectangle<float> knobR, float startA, float endA, bool big = false, int n = 11)
+inline void knobTicks (juce::Graphics&, juce::Rectangle<float>, float, float, bool = false, int = 11)
 {
-    const auto c = knobR.getCentre(); const float r = knobR.getWidth() * 0.5f;
-    for (int i = 0; i < n; ++i)
-    {
-        const float a = startA + (float) i / (float) (n - 1) * (endA - startA);
-        const bool major = i == 0 || i == n - 1 || (big && i == n / 2);
-        const float r1 = r + (big ? 7.0f : 3.5f), r2 = r1 + (major ? (big ? 7.0f : 5.0f) : (big ? 4.5f : 3.0f));
-        g.setColour (VegaColours::textDim.withAlpha (major ? 0.9f : 0.55f));
-        g.drawLine (c.x + r1 * std::sin (a), c.y - r1 * std::cos (a), c.x + r2 * std::sin (a), c.y - r2 * std::cos (a), big ? 1.6f : 1.1f);
-    }
+    // the themed wheel draws its own rail / ruler (Control Creator > Wheel > Rail)
 }
 
 /** The plug-ins' illuminated square push-button (no label). Lit in `lit` (cyan by default). */
 inline void squareButton (juce::Graphics& g, juce::Rectangle<float> sq, bool on, bool over = false, juce::Colour lit = VegaColours::accent)
 {
-    const float sz = std::min (sq.getWidth(), sq.getHeight());
-    {
-        juce::Path sh; sh.addRoundedRectangle (sq.translated (0, 2), 2.0f);
-        juce::DropShadow (juce::Colours::black.withAlpha (0.7f), 6, {}).drawForPath (g, sh);
-    }
-    g.setColour (juce::Colour (0xff161616)); g.fillRoundedRectangle (sq, 2.0f);
-    auto inner = sq.reduced (sz * 0.14f);
-    if (on)
-    {
-        g.setColour (lit.withAlpha (0.35f)); g.fillRoundedRectangle (sq.expanded (2.0f), 3.0f);
-        g.setColour (lit); g.fillRoundedRectangle (sq.reduced (1.0f), 2.0f);
-        g.setColour (juce::Colours::white.withAlpha (0.6f)); g.fillRoundedRectangle (inner.reduced (sz * 0.12f), 1.5f);
-        g.setColour (lit.brighter (0.4f)); g.drawRoundedRectangle (inner, 1.5f, 1.2f);
-    }
-    else
-    {
-        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff4a4a4a), inner.getX(), inner.getY(), juce::Colour (0xff262626), inner.getRight(), inner.getBottom(), false));
-        g.fillRoundedRectangle (inner, 1.5f);
-        g.setColour (juce::Colour (0xff5c5c5c)); g.drawRoundedRectangle (inner, 1.5f, 1.0f);
-    }
-    if (over) { g.setColour (juce::Colours::white.withAlpha (0.08f)); g.fillRoundedRectangle (sq, 2.0f); }
+    vegacontrols::paintButton (g, sq, on, over, false, lit == VegaColours::accent ? juce::Colour() : lit);
 }
 
 /** A wider key in the same style (bezel, grey face, lit face when on). Returns the face for an icon / text. */
 inline juce::Rectangle<float> key (juce::Graphics& g, juce::Rectangle<float> r, bool on, bool over, bool down, juce::Colour lit = VegaColours::accent)
 {
-    {
-        juce::Path sh; sh.addRoundedRectangle (r.translated (0, 2), 2.5f);
-        juce::DropShadow (juce::Colours::black.withAlpha (0.7f), 6, {}).drawForPath (g, sh);
-    }
-    g.setColour (juce::Colour (0xff161616)); g.fillRoundedRectangle (r, 2.5f);
-    auto face = r.reduced (std::min (4.0f, std::min (r.getWidth(), r.getHeight()) * 0.14f));
-    if (on)
-    {
-        g.setColour (lit.withAlpha (0.3f)); g.fillRoundedRectangle (r.expanded (2.0f), 3.5f);
-        g.setGradientFill (juce::ColourGradient (lit.brighter (0.25f), 0, face.getY(), lit.darker (0.1f), 0, face.getBottom(), false));
-        g.fillRoundedRectangle (face, 1.5f);
-    }
-    else
-    {
-        g.setGradientFill (juce::ColourGradient (juce::Colour (down ? 0xff3a3a3a : over ? 0xff545454 : 0xff4a4a4a), face.getX(), face.getY(),
-                                                 juce::Colour (0xff262626), face.getRight(), face.getBottom(), false));
-        g.fillRoundedRectangle (face, 1.5f);
-        g.setColour (juce::Colour (0xff5c5c5c)); g.drawRoundedRectangle (face, 1.5f, 1.0f);
-    }
-    return face;
+    return vegacontrols::paintButton (g, r, on, over, down, lit == VegaColours::accent ? juce::Colour() : lit);
 }
-inline juce::Colour keyInk (bool on) { return on ? juce::Colour (0xff141414) : VegaColours::text; }
+inline juce::Colour keyInk (bool on) { return vegacontrols::buttonText (on); }
 
 /** The plug-ins' fader: tick marks both sides, thin black slot, dark cap with a white line.
     `capY` is the cap centre. */
 inline void fader (juce::Graphics& g, juce::Rectangle<float> area, float capY, bool hover = false, float capW = 28.0f, float capH = 16.0f,
                    juce::Colour line = juce::Colours::white, int ticks = 8, bool litCap = false)
 {
-    const float cx = area.getCentreX(), top = area.getY() + 8.0f, bottom = area.getBottom() - 8.0f;
-    const float half = capW * 0.5f + 6.0f;
-    for (int i = 0; i <= ticks; ++i)
-    {
-        const float ty = top + (bottom - top) * (float) i / (float) ticks;
-        const bool major = i % 4 == 0;
-        g.setColour (VegaColours::textDim.withAlpha (major ? 0.8f : 0.4f));
-        g.drawLine (cx - half - 9.0f, ty, cx - (major ? half - 3.0f : half - 1.0f), ty, 1.0f);
-        g.drawLine (cx + (major ? half - 3.0f : half - 1.0f), ty, cx + half + 9.0f, ty, 1.0f);
-    }
-    g.setColour (juce::Colour (0xff121212)); g.fillRoundedRectangle (cx - 2.0f, top - 4, 4.0f, bottom - top + 8, 2.0f);
-    g.setColour (juce::Colours::white.withAlpha (0.05f)); g.drawRoundedRectangle (cx - 2.0f, top - 4, 4.0f, bottom - top + 8, 2.0f, 0.8f);
-    auto cap = juce::Rectangle<float> (capW, capH).withCentre ({ cx, capY });
-    juce::Path sh; sh.addRoundedRectangle (cap.translated (0, 3), 2.0f);
-    juce::DropShadow (juce::Colours::black.withAlpha (0.8f), 8, {}).drawForPath (g, sh);
-    if (litCap)
-    {   // the selected channel's cap lights up (like FL Studio's mixer)
-        g.setColour (VegaColours::accent.withAlpha (0.25f)); g.fillRoundedRectangle (cap.expanded (3.0f), 4.0f);
-        g.setGradientFill (juce::ColourGradient (VegaColours::accent.brighter (0.35f), cx, cap.getY(), VegaColours::accent.darker (0.55f), cx, cap.getBottom(), false));
-        g.fillRoundedRectangle (cap, 2.0f);
-        g.setColour (VegaColours::accent.darker (0.8f)); g.drawRoundedRectangle (cap, 2.0f, 1.0f);
-        g.setColour (juce::Colour (0xff0d2a29));
-        g.drawLine (cap.getX() + 3, cap.getCentreY(), cap.getRight() - 3, cap.getCentreY(), 1.6f);
-        return;
-    }
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff5a5a5a), cx, cap.getY(), juce::Colour (0xff222222), cx, cap.getBottom(), false));
-    g.fillRoundedRectangle (cap, 2.0f);
-    g.setColour (juce::Colour (0xff1a1a1a)); g.drawRoundedRectangle (cap, 2.0f, 1.0f);
-    g.setColour (hover ? VegaColours::accent : line);
-    g.drawLine (cap.getX() + 3, cap.getCentreY(), cap.getRight() - 3, cap.getCentreY(), 1.6f);
+    // the cap travels between area.y + 8 and area.bottom - 8 (callers hit-test that range)
+    juce::ignoreUnused (line, ticks);
+    auto a = area; a.setTop (area.getY() + 8.0f - capH * 0.5f); a.setBottom (area.getBottom() - 8.0f + capH * 0.5f);
+    vegacontrols::paintSlider (g, a, capY, true, hover, litCap, {}, nullptr, capW, capH);
 }
 
 /** Hardware-style fader (like a control surface's): silver cap with a scooped top and grip ridges,
     long slot with a printed dB scale. `lit` = the selected channel (cyan cap line + glow). */
 inline void hardwareFader (juce::Graphics& g, juce::Rectangle<float> area, float capY, bool hover, bool lit, float capW = 34.0f, float capH = 44.0f)
 {
-    const float cx = area.getCentreX(), top = area.getY() + capH * 0.5f, bottom = area.getBottom() - capH * 0.5f;
-    // printed scale: ticks on the right, a long major tick every quarter
-    for (int i = 0; i <= 16; ++i)
-    {
-        const float ty = top + (bottom - top) * (float) i / 16.0f;
-        const bool major = i % 4 == 0;
-        g.setColour (VegaColours::textDim.withAlpha (major ? 0.85f : 0.45f));
-        g.drawLine (cx + 6.0f, ty, cx + (major ? 16.0f : 11.0f), ty, 1.0f);
-        g.drawLine (cx - (major ? 16.0f : 11.0f), ty, cx - 6.0f, ty, 1.0f);
-    }
-    // slot
-    auto slot = juce::Rectangle<float> (5.0f, bottom - top + 12.0f).withCentre ({ cx, (top + bottom) * 0.5f });
-    g.setColour (juce::Colour (0xff050505)); g.fillRoundedRectangle (slot, 2.5f);
-    g.setColour (juce::Colours::white.withAlpha (0.07f)); g.drawRoundedRectangle (slot.expanded (0.5f), 2.5f, 0.8f);
-    // cap
-    auto cap = juce::Rectangle<float> (capW, capH).withCentre ({ cx, capY });
-    {
-        juce::Path sh; sh.addRoundedRectangle (cap.translated (0, 5), 4.0f);
-        juce::DropShadow (juce::Colours::black.withAlpha (0.85f), 12, {}).drawForPath (g, sh);
-    }
-    if (lit) { g.setColour (VegaColours::accent.withAlpha (0.28f)); g.fillRoundedRectangle (cap.expanded (4.0f), 6.0f); }
-    // body: the plug-ins' charcoal cap colours, darker skirt at the bottom
-    juce::ColourGradient body (juce::Colour (0xff6a6a6a), cap.getX(), cap.getY(), juce::Colour (0xff1c1c1c), cap.getX(), cap.getBottom(), false);
-    body.addColour (0.45, juce::Colour (0xff4a4a4a));
-    body.addColour (0.55, juce::Colour (0xff383838));
-    g.setGradientFill (body); g.fillRoundedRectangle (cap, 4.0f);
-    // side shading (rounded edges)
-    g.setGradientFill (juce::ColourGradient (juce::Colours::black.withAlpha (0.25f), cap.getX(), 0, juce::Colours::transparentBlack, cap.getX() + capW * 0.25f, 0, false));
-    g.fillRoundedRectangle (cap, 4.0f);
-    g.setGradientFill (juce::ColourGradient (juce::Colours::transparentBlack, cap.getRight() - capW * 0.25f, 0, juce::Colours::black.withAlpha (0.3f), cap.getRight(), 0, false));
-    g.fillRoundedRectangle (cap, 4.0f);
-    // scooped finger rest: the upper half dips (darker band, light lip)
-    auto scoop = cap.withHeight (capH * 0.42f).reduced (3.0f, 3.0f);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff262626), 0, scoop.getY(), juce::Colour (0xff5c5c5c), 0, scoop.getBottom(), false));
-    g.fillRoundedRectangle (scoop, 3.0f);
-    // grip ridges on the lower half
-    for (int k = 0; k < 4; ++k)
-    {
-        const float y = cap.getY() + capH * (0.62f + k * 0.08f);
-        g.setColour (juce::Colours::black.withAlpha (0.45f)); g.drawLine (cap.getX() + 5, y, cap.getRight() - 5, y, 1.0f);
-        g.setColour (juce::Colours::white.withAlpha (0.12f)); g.drawLine (cap.getX() + 5, y + 1, cap.getRight() - 5, y + 1, 0.8f);
-    }
-    // centre line (the value mark)
-    const float my = cap.getY() + capH * 0.5f;
-    g.setColour (lit ? VegaColours::accent : hover ? VegaColours::accent.withAlpha (0.8f) : juce::Colours::white);
-    g.fillRect (cap.getX() + 2.0f, my - 1.2f, capW - 4.0f, 2.4f);
-    g.setColour (juce::Colours::black.withAlpha (0.55f)); g.drawRoundedRectangle (cap, 4.0f, 1.0f);
+    // the cap travels between area.y + capH / 2 and area.bottom - capH / 2
+    vegacontrols::paintSlider (g, area, capY, true, hover, lit, {}, nullptr, capW, capH);
 }
 
 /** The plug-ins' LED meter column (cyan, white above -18 dB, red at 0), with small blocks and a smooth top:
@@ -354,81 +221,25 @@ public:
         const float r = size * 0.5f;
         const float angle = startA + pos * (endA - startA);
 
-        // tick marks
+        if (stepLabels.isNotEmpty())
         {
-            const int numTicks = stepLabels.isNotEmpty() ? juce::StringArray::fromTokens (stepLabels, "|", "").size()
-                                                         : (big ? 11 : 11);
-            for (int i = 0; i < numTicks; ++i)
+            auto labels = juce::StringArray::fromTokens (stepLabels, "|", "");
+            g.setFont (VegaFonts::ui (9.5f));
+            for (int i = 0; i < labels.size(); ++i)
             {
-                const float t = numTicks > 1 ? (float) i / (float) (numTicks - 1) : 0.0f;
-                const float a = startA + t * (endA - startA);
-                const bool major = (i == 0 || i == numTicks - 1 || (big && i == numTicks / 2));
-                const float r1 = r + (big ? 7.0f : 3.5f), r2 = r1 + (major ? (big ? 7.0f : 5.0f) : (big ? 4.5f : 3.0f));
-                g.setColour (textDim.withAlpha (major ? 0.9f : 0.55f));
-                g.drawLine (c.x + r1 * std::sin (a), c.y - r1 * std::cos (a),
-                            c.x + r2 * std::sin (a), c.y - r2 * std::cos (a), big ? 1.6f : 1.1f);
-            }
-            if (stepLabels.isNotEmpty())
-            {
-                auto labels = juce::StringArray::fromTokens (stepLabels, "|", "");
-                g.setFont (VegaFonts::ui (9.5f));
-                for (int i = 0; i < labels.size(); ++i)
-                {
-                    const float t = labels.size() > 1 ? (float) i / (float) (labels.size() - 1) : 0.0f;
-                    const float a = startA + t * (endA - startA);
-                    const float rl = r + 18.0f;
-                    auto lc = juce::Point<float> (c.x + rl * std::sin (a), c.y - rl * std::cos (a));
-                    const bool sel = juce::roundToInt (pos * (labels.size() - 1)) == i;
-                    g.setColour (sel ? accent : textDim);
-                    g.drawFittedText (labels[i], juce::Rectangle<int> (40, 12).withCentre (lc.toInt()),
-                                      juce::Justification::centred, 1);
-                }
+                const float t = labels.size() > 1 ? (float) i / (float) (labels.size() - 1) : 0.0f;
+                const float a = vegacontrols::wheelStart + t * (vegacontrols::wheelEnd - vegacontrols::wheelStart);
+                const float rl = r + 18.0f;
+                auto lc = juce::Point<float> (c.x + rl * std::sin (a), c.y - rl * std::cos (a));
+                const bool sel = juce::roundToInt (pos * (labels.size() - 1)) == i;
+                g.setColour (sel ? accent : textDim);
+                g.drawFittedText (labels[i], juce::Rectangle<int> (40, 12).withCentre (lc.toInt()), juce::Justification::centred, 1);
             }
         }
-
-        // drop shadow
-        {
-            juce::Path sh; sh.addEllipse (knob.translated (0, big ? 5.0f : 3.0f).expanded (big ? 3.0f : 1.5f));
-            juce::DropShadow (juce::Colours::black.withAlpha (0.75f), big ? 18 : 9, {}).drawForPath (g, sh);
-        }
-
-        if (big)
-        {
-            // outer machined collar
-            g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3b3b3b), c.x, knob.getY(),
-                                                     juce::Colour (0xff121212), c.x, knob.getBottom(), false));
-            g.fillEllipse (knob);
-            g.setColour (juce::Colour (0xff4a4a4a));
-            g.drawEllipse (knob.reduced (0.5f), 1.0f);
-            knob = knob.reduced (r * 0.13f);
-        }
-
-        // knob body
-        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff353535), c.x - r * 0.4f, c.y - r * 0.6f,
-                                                 juce::Colour (0xff141414), c.x + r * 0.5f, c.y + r * 0.8f, true));
-        g.fillEllipse (knob);
-        // face
-        auto face = knob.reduced (knob.getWidth() * 0.06f);
-        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff2c2c2c), c.x, face.getY(),
-                                                 juce::Colour (0xff1a1a1a), c.x, face.getBottom(), false));
-        g.fillEllipse (face);
-        g.setColour (juce::Colours::white.withAlpha (0.06f));
-        g.drawEllipse (face, 1.0f);
-        g.setColour (juce::Colours::black.withAlpha (0.6f));
-        g.drawEllipse (knob, 1.0f);
-
-        // pointer
-        const float kr = knob.getWidth() * 0.5f;
-        const float p1 = big ? kr * 0.68f : kr * 0.35f, p2 = kr * 0.94f;
-        g.setColour (juce::Colours::white.withAlpha (0.95f));
-        g.drawLine (c.x + p1 * std::sin (angle), c.y - p1 * std::cos (angle),
-                    c.x + p2 * std::sin (angle), c.y - p2 * std::cos (angle), big ? 2.6f : 2.0f);
-
-        if (s.isMouseOverOrDragging())
-        {
-            g.setColour (accent.withAlpha (0.12f));
-            g.drawEllipse (knob.expanded (2.0f), 1.2f);
-        }
+        juce::ignoreUnused (angle);
+        // the themed wheel (Control Creator); it always sweeps its own arc so the rail and pointer agree
+        const float themedAngle = vegacontrols::wheelStart + pos * (vegacontrols::wheelEnd - vegacontrols::wheelStart);
+        vegacontrols::paintWheel (g, knob.expanded (tickSpace * 0.8f), themedAngle, pos, s.isMouseOverOrDragging(), s.isMouseButtonDown());
     }
 
     // ------------------------------------------------------------------ vertical fader
@@ -458,35 +269,8 @@ public:
             return;
         }
         auto area = juce::Rectangle<float> ((float) x, (float) y, (float) w, (float) h);
-        const float cx = area.getCentreX();
-        const float top = area.getY() + 8.0f, bottom = area.getBottom() - 8.0f;
-
-        // ticks
-        for (int i = 0; i <= 8; ++i)
-        {
-            const float ty = top + (bottom - top) * (float) i / 8.0f;
-            const bool major = (i % 4 == 0);
-            g.setColour (textDim.withAlpha (major ? 0.8f : 0.4f));
-            g.drawLine (cx - 20, ty, cx - (major ? 11.0f : 13.0f), ty, 1.0f);
-            g.drawLine (cx + (major ? 11.0f : 13.0f), ty, cx + 20, ty, 1.0f);
-        }
-        // slot
-        g.setColour (juce::Colour (0xff121212));
-        g.fillRoundedRectangle (cx - 2.0f, top - 4, 4.0f, bottom - top + 8, 2.0f);
-        g.setColour (juce::Colours::white.withAlpha (0.05f));
-        g.drawRoundedRectangle (cx - 2.0f, top - 4, 4.0f, bottom - top + 8, 2.0f, 0.8f);
-
-        // cap
-        auto cap = juce::Rectangle<float> (28.0f, 16.0f).withCentre ({ cx, sliderPos });
-        juce::Path sh; sh.addRoundedRectangle (cap.translated (0, 3), 2.0f);
-        juce::DropShadow (juce::Colours::black.withAlpha (0.8f), 8, {}).drawForPath (g, sh);
-        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff5a5a5a), cx, cap.getY(),
-                                                 juce::Colour (0xff222222), cx, cap.getBottom(), false));
-        g.fillRoundedRectangle (cap, 2.0f);
-        g.setColour (juce::Colour (0xff1a1a1a));
-        g.drawRoundedRectangle (cap, 2.0f, 1.0f);
-        g.setColour (s.isMouseOverOrDragging() ? accent : juce::Colours::white);
-        g.drawLine (cap.getX() + 3, cap.getCentreY(), cap.getRight() - 3, cap.getCentreY(), 1.6f);
+        juce::ignoreUnused (minPos, maxPos);
+        vegapaint::fader (g, area, sliderPos, s.isMouseOverOrDragging(), 28.0f, 16.0f);
     }
 
     juce::Slider::SliderLayout getSliderLayout (juce::Slider& s) override
@@ -574,56 +358,32 @@ public:
             return;
         }
 
-        // illuminated square push‑button
+        // illuminated square push-button (themed)
         const float sz = std::min (area.getWidth(), area.getHeight() - 16.0f);
         auto sq = juce::Rectangle<float> (sz, sz).withCentre ({ area.getCentreX(), area.getY() + sz * 0.5f + 1.0f });
-        juce::Path sh; sh.addRoundedRectangle (sq.translated (0, 2), 2.0f);
-        juce::DropShadow (juce::Colours::black.withAlpha (0.7f), 6, {}).drawForPath (g, sh);
-
-        g.setColour (juce::Colour (0xff161616));
-        g.fillRoundedRectangle (sq, 2.0f);
-        auto inner = sq.reduced (sz * 0.14f);
-        if (on)
-        {
-            g.setColour (accent.withAlpha (0.35f));
-            g.fillRoundedRectangle (sq.expanded (2.0f), 3.0f);
-            g.setColour (accent);
-            g.fillRoundedRectangle (sq.reduced (1.0f), 2.0f);
-            g.setColour (juce::Colours::white.withAlpha (0.6f));
-            g.fillRoundedRectangle (inner.reduced (sz * 0.12f), 1.5f);
-            g.setColour (accent.brighter (0.4f));
-            g.drawRoundedRectangle (inner, 1.5f, 1.2f);
-        }
-        else
-        {
-            g.setGradientFill (juce::ColourGradient (juce::Colour (0xff4a4a4a), inner.getX(), inner.getY(),
-                                                     juce::Colour (0xff262626), inner.getRight(), inner.getBottom(), false));
-            g.fillRoundedRectangle (inner, 1.5f);
-            g.setColour (juce::Colour (0xff5c5c5c));
-            g.drawRoundedRectangle (inner, 1.5f, 1.0f);
-        }
-        if (over)
-        {
-            g.setColour (juce::Colours::white.withAlpha (0.08f));
-            g.fillRoundedRectangle (sq, 2.0f);
-        }
+        vegacontrols::paintButton (g, sq, on, over);
         g.setColour (textDim);
         g.setFont (VegaFonts::ui (11.0f));
         g.drawText (on ? "On" : "Off", area.withTop (sq.getBottom() + 3.0f).toNearestInt(), juce::Justification::centredTop);
     }
 
     // ------------------------------------------------------------------ text buttons (top bar)
+    /** a button's lit colour: its own buttonOnColourId if the component set one, else the theme's */
+    static juce::Colour litColourFor (juce::Button& b)
+    {
+        return b.isColourSpecified (juce::TextButton::buttonOnColourId) ? b.findColour (juce::TextButton::buttonOnColourId) : juce::Colour();
+    }
     void drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&, bool over, bool down) override
     {
-        auto r = b.getLocalBounds().toFloat().reduced (0.5f);
-        auto col = b.getToggleState() ? findColour (juce::TextButton::buttonOnColourId)
-                                      : findColour (juce::TextButton::buttonColourId);
-        if (over) col = col.brighter (0.08f);
-        if (down) col = col.darker (0.15f);
-        g.setColour (col);
-        g.fillRoundedRectangle (r, 2.0f);
-        g.setColour (juce::Colours::black.withAlpha (0.5f));
-        g.drawRoundedRectangle (r, 2.0f, 1.0f);
+        vegacontrols::paintButton (g, b.getLocalBounds().toFloat(), b.getToggleState(), over && b.isEnabled(), down, litColourFor (b));
+    }
+    void drawButtonText (juce::Graphics& g, juce::TextButton& b, bool, bool down) override
+    {
+        auto c = vegacontrols::buttonText (b.getToggleState(), litColourFor (b));
+        if (! b.isEnabled()) c = c.withMultipliedAlpha (0.4f);
+        g.setColour (c);
+        g.setFont (getTextButtonFont (b, b.getHeight()));
+        g.drawFittedText (b.getButtonText(), b.getLocalBounds().reduced (3, 1).translated (0, down ? 1 : 0), juce::Justification::centred, 1);
     }
     juce::Font getTextButtonFont (juce::TextButton&, int) override { return VegaFonts::ui (10.5f, true); }
 

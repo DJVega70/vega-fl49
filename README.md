@@ -27,6 +27,20 @@ A DAW built around the **Novation FLkey 2 49**, by Vega Productions. The keyboar
   - **16 pads:** **DRUMS**, **CLIPS** (a 2 x 8 launcher, ▲ ▼ change scenes) or **SCENES**. **■** stops all clips and **▶** plays / stops.
 - **Arrangement:** the FLkey side panel docks on the right (**F**), with knobs, pads, keys (scale & chords) and faders.
 
+## Control Creator (Options > Control Creator...)
+Every knob, fader and button in VEGA FL49 is drawn from one of three styles, and the **Control Creator** designs them. The default is a slate look with glossy "pillow" buttons that glow light blue when lit.
+- **Tabs:** **Wheel** (knobs), **Slider** (faders), **Button**.
+- **Settings on the left**, in panels:
+  - **Wheel:** *Body* (style Plain / Gear / Knurled / Scalloped, texture Matte / MidGlossy / Glossy / Metal, color, size, shadow), *Dent* (count, depth, size), *Fill* (fill and pressed colours), *Various* (pointer: short line, long line, dot, triangle), *Rail* (arc, ruler outside, ruler inside, dots, with big and small steps), *Options* (pointer on cap, fill rail, fill ruler, reflection) and *Cap* (flat, dome, concave, chrome, with size and shadow).
+  - **Slider:** rail width and colour, ruler (both sides / left / right, steps, colour), fill rail, and the cap (Classic, Flat, Grip, Lit, Hardware; colour, line colour, width, height, gloss, shadow).
+  - **Button:** shape (Rounded, Pillow, Square), corner and pillow curve, colour, lit colour, border, text colours, texture, bevel, glow and shadow.
+  - Click a colour tag to pick a colour, or type a hex value. Double-click a knob to reset it.
+- **Preview** in the middle: drag the samples to try them; click the buttons to light them; **Animate** sweeps them.
+- **Presets / History** on the right: built-in looks plus your own (**Save in presets**; right-click one of yours to delete it). History keeps the looks you made this session.
+- **LIVE** (on by default): the whole DAW follows your changes as you make them. With LIVE off, **Apply** uses the look.
+- **Randomize** for ideas, **Default** to go back, **Export... / Import...** to share a whole look as a `.vegalook` file.
+- Your look is saved and comes back the next time you start VEGA FL49.
+
 ## Roadmap
 - **Stage 1 (this build):** the new look: top row status, clip launcher, hardware strip, arrangement with the FLkey dock.
 - **Stage 2:** Chord Assist & Arpeggiator: a chord grid in the key, voicings / inversions, tensions (7th, 9th, add11, add13), and a synced arpeggiator.

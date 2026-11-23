@@ -13,6 +13,7 @@
 #include "SongMap.h"
 #include "ExportDialog.h"
 #include "Edition.h"
+#include "ControlCreator.h"
 #if VEGA_FL49
  #include "Fl49Panel.h"
  #include "HardwareStrip.h"
@@ -141,6 +142,10 @@ class MainComponent : public juce::Component, public juce::MenuBarModel, public 
 public:
     MainComponent (te::Engine& e) : engine (e), session (e), vs (session), hub (e, session), apc (e, session), transport (vs), arrange (vs), mixer (vs), launcher (vs), pianoRoll (vs), browser (vs)
     {
+        // the control look (Control Creator) loads before anything paints
+        vegacontrols::Theme::get().setFile (engine.getPropertyStorage().getAppPrefsFolder().getChildFile ("VegaLook.xml"));
+        themeListener.onChange = [] { for (int i = juce::Desktop::getInstance().getNumComponents(); --i >= 0;) if (auto* c = juce::Desktop::getInstance().getComponent (i)) c->repaint(); };
+        vegacontrols::Theme::get().addChangeListener (&themeListener);
         setLookAndFeel (&lnf);
         juce::LookAndFeel::setDefaultLookAndFeel (&lnf);     // menus, dialogs and floating windows get the plug-ins' look too
         session.edit().getAutomationRecordManager().setWritingAutomation (false);
@@ -218,7 +223,7 @@ public:
         startTimerHz (2);
         juce::Timer::callAfterDelay (900, [sp = juce::Component::SafePointer<MainComponent> (this)] { if (sp != nullptr) sp->offerRecovery(); });
     }
-    ~MainComponent() override { saveUi(); mixerWin.reset(); pianoWin.reset(); engine.getExternalControllerManager().detachFromEdit (&session.edit()); menuBar.setModel (nullptr); mixer.clearAll(); setLookAndFeel (nullptr); juce::LookAndFeel::setDefaultLookAndFeel (nullptr); }
+    ~MainComponent() override { vegacontrols::Theme::get().removeChangeListener (&themeListener); controlCreator.reset(); saveUi(); mixerWin.reset(); pianoWin.reset(); engine.getExternalControllerManager().detachFromEdit (&session.edit()); menuBar.setModel (nullptr); mixer.clearAll(); setLookAndFeel (nullptr); juce::LookAndFeel::setDefaultLookAndFeel (nullptr); }
 
     DawSession& getSession() { return session; }
     std::function<void (juce::String)> onTitle;
@@ -358,6 +363,7 @@ public:
             m.addItem (47, juce::String ("Mackie Control (MCU)...") + (mcuEnabled() ? "   - on" : ""));
             m.addItem (44, juce::String ("Controllers (FLkey 2 / HUI)...") + (hub.isConnected() ? "   - connected" : ""));
             m.addItem (49, juce::String ("Akai APC Key 25 mk2...") + (apc.isConnected() ? "   - connected" : ""));
+            m.addItem (160, "Control Creator...   (knobs, faders, buttons)");
             m.addItem (42, "Metronome", true, session.edit().clickTrackEnabled.get());
             m.addItem (43, "Follow playhead", true, vs.followPlayhead);
         }
@@ -445,6 +451,7 @@ public:
                         "Ctrl+wheel zoom, Shift+wheel scroll. Double-click an instrument track to create a MIDI clip.\n"
                         "Ruler: click to move the playhead, drag the top strip (or Shift-drag) to set the loop.\n"
                         "Piano roll: click to add notes, drag to move, drag the right edge to resize, right-click or double-click to delete, drag in the velocity lane."); break;
+            case 160: openControlCreator(); break;
             case 51: juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::NoIcon, VEGA_APP_NAME,
                         "Version " JUCE_APPLICATION_VERSION_STRING "\n\nBuilt on Tracktion Engine (GPLv3) and JUCE.\n32-bit floating-point, multi-core audio engine."); break;
             default: break;
@@ -523,6 +530,19 @@ private:
        #endif
         if (on) launcher.grabKeyboardFocus();
     }
+    void openControlCreator()
+    {
+        if (controlCreator == nullptr)
+            controlCreator = std::make_unique<ControlCreatorWindow> (engine.getPropertyStorage().getAppPrefsFolder().getChildFile ("Control Presets"));
+        controlCreator->setVisible (true);
+        controlCreator->toFront (true);
+    }
+    struct ThemeListener : public juce::ChangeListener
+    {
+        std::function<void()> onChange;
+        void changeListenerCallback (juce::ChangeBroadcaster*) override { if (onChange) onChange(); }
+    } themeListener;
+    std::unique_ptr<ControlCreatorWindow> controlCreator;
     const char* launchQuantName()
     {
         switch (session.edit().getLaunchQuantisation().type.get())

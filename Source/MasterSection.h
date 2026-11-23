@@ -27,9 +27,10 @@ public:
         auto b = getLocalBounds().toFloat();
         const float d = std::min (b.getWidth(), b.getHeight()) - 20.0f;
         auto k = juce::Rectangle<float> (d, d).withCentre (b.getCentre());
-        vegapaint::knobTicks (g, k, rp.startAngleRadians, rp.endAngleRadians);
-        const float a = rp.startAngleRadians + (float) valueToProportionOfLength (getValue()) * (rp.endAngleRadians - rp.startAngleRadians);
-        vegapaint::knob (g, k, a, false, capColour, isMouseOverOrDragging());
+        juce::ignoreUnused (rp);
+        const float v = (float) valueToProportionOfLength (getValue());
+        const float a = vegacontrols::wheelStart + v * (vegacontrols::wheelEnd - vegacontrols::wheelStart);
+        vegacontrols::paintWheel (g, k.expanded (9.0f), a, v, isMouseOverOrDragging(), isMouseButtonDown(), capColour);
     }
 };
 

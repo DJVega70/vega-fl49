@@ -111,19 +111,15 @@ inline void drawPad (juce::Graphics& g, juce::Rectangle<float> r, const PadLook&
     g.setColour (juce::Colours::white.withAlpha (l.lit || hit ? 0.55f : 0.10f)); g.drawRoundedRectangle (r.reduced (0.5f), 6.0f, 1.0f);
 }
 
-/** Slider-cap style fader, like the FLkey's */
+/** A fader in the current theme. `slot` is the cap centre's travel; the ruler goes on the left only,
+    so meters can sit on the right. */
 inline void drawFader (juce::Graphics& g, juce::Rectangle<float> slot, float pos, juce::Colour tint, bool selected)
 {
-    g.setColour (juce::Colour (0xff0c0c0d)); g.fillRoundedRectangle (slot.withSizeKeepingCentre (5.0f, slot.getHeight()), 2.5f);
-    // ticks
-    g.setColour (juce::Colour (0xff3a3b40));
-    for (int i = 0; i <= 10; ++i) { const float y = slot.getY() + slot.getHeight() * i / 10.0f; g.drawHorizontalLine ((int) y, slot.getX() + 2, slot.getX() + 7); }
-    const float y = slot.getBottom() - slot.getHeight() * pos;
-    auto cap = juce::Rectangle<float> (slot.getCentreX() - 14, y - 8, 28, 16);
-    g.setColour (juce::Colours::black.withAlpha (0.5f)); g.fillRoundedRectangle (cap.translated (0, 2), 3.0f);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xffe6e6e8), cap.getX(), cap.getY(), juce::Colour (0xff8d8e93), cap.getX(), cap.getBottom(), false));
-    g.fillRoundedRectangle (cap, 3.0f);
-    g.setColour (selected ? tint : juce::Colour (0xff222226)); g.fillRect (cap.withSizeKeepingCentre (cap.getWidth() - 6, 2.0f));
+    auto st = vegacontrols::Theme::get().slider();
+    if (st.ruler != 0) st.ruler = 2;
+    const float capH = std::min (st.capHeight, 20.0f), capW = std::min (st.capWidth, 30.0f);
+    auto area = juce::Rectangle<float> (slot.getCentreX() - 24.0f, slot.getY() - capH * 0.5f, 48.0f, slot.getHeight() + capH);
+    vegacontrols::paintSlider (g, area, slot.getBottom() - slot.getHeight() * pos, true, false, selected, tint, &st, capW, capH);
 }
 
 /** A green-to-red segmented level meter (dB in, -60 .. +6) */

@@ -385,16 +385,11 @@ private:
             g.drawText (fl49ui::knobValue (p, hui), vb, juce::Justification::centred);
             // knob
             const float v = p != nullptr ? p->getCurrentNormalisedValue() : 0.0f;
-            auto kr = juce::Rectangle<float> (0, 0, 42, 42).withCentre ({ r.getCentreX(), r.getY() + 46 });
-            const float a0 = -2.4f, a1 = 2.4f, a = a0 + v * (a1 - a0);
-            juce::Path track; track.addCentredArc (kr.getCentreX(), kr.getCentreY(), 24, 24, 0, a0, a1, true);
-            g.setColour (juce::Colour (0xff141416)); g.strokePath (track, juce::PathStrokeType (3.5f));
-            if (p != nullptr)
-            {
-                juce::Path on; on.addCentredArc (kr.getCentreX(), kr.getCentreY(), 24, 24, 0, a0, a, true);
-                g.setColour (now - touched[(size_t) i] < 600 ? col.brighter (0.4f) : col); g.strokePath (on, juce::PathStrokeType (3.5f));
-            }
-            vegapaint::knob (g, kr, a, false, p != nullptr ? juce::Colours::white : juce::Colour (0xff555555));
+            auto kr = juce::Rectangle<float> (0, 0, 58, 58).withCentre ({ r.getCentreX(), r.getY() + 46 });
+            const float a = vegacontrols::wheelStart + v * (vegacontrols::wheelEnd - vegacontrols::wheelStart);
+            // themed wheel, its fill in the knob's FLkey colour (brighter while you turn it)
+            vegacontrols::paintWheel (g, kr, a, p != nullptr ? v : 0.0f, false, now - touched[(size_t) i] < 600,
+                                      p != nullptr ? (now - touched[(size_t) i] < 600 ? col.brighter (0.4f) : col) : juce::Colour (0xff555555));
             g.setColour (p != nullptr ? VegaColours::text : VegaColours::textDim); g.setFont (VegaFonts::ui (10.5f, true));
             g.drawFittedText (fl49ui::knobName (i, fl, hui, vs.session), r.withTop (r.getBottom() - 20).toNearestInt(), juce::Justification::centred, 1);
         }
