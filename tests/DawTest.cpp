@@ -862,7 +862,7 @@ int main()
         writeTone ("vega_r0.wav", 60.0, 60.0 / 124.0 * 4.0).moveFileTo (tmp.getChildFile ("renders/t0s0.wav"));
         writeTone ("vega_r1.wav", 220.0, 60.0 / 124.0 * 8.0).moveFileTo (tmp.getChildFile ("renders/t1s0.wav"));
         // the drum track's sample kit rides along (the bundled 808: kick and clap)
-        const auto kitSrc = juce::File (__FILE__).getParentDirectory().getSiblingFile ("android/app/src/main/assets/kits/vintage808");
+        const auto kitSrc = juce::File (__FILE__).getParentDirectory().getChildFile ("fixtures/vintage808");
         tmp.getChildFile ("kits/vintage808").createDirectory();
         for (auto n : { "36.wav", "39.wav" }) kitSrc.getChildFile (n).copyFileTo (tmp.getChildFile ("kits/vintage808").getChildFile (n));
         tmp.getChildFile ("sketch.json").replaceWithText (R"({
