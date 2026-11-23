@@ -1210,3 +1210,22 @@ DawSession::SketchResult DawSession::importSketch (const juce::File& file, const
                   + (res.kits > 0 ? " Drum kits loaded into the Sampler: " + juce::String (res.kits) + "." : juce::String());
     return res;
 }
+
+int DawSession::fixMultiOutPlugins()
+{
+    int fixed = 0;
+    for (auto* p : te::getAllPlugins (edit(), false))
+    {
+        auto* ext = dynamic_cast<te::ExternalPlugin*> (p);
+        if (ext == nullptr) continue;
+        auto* pi = ext->getAudioPluginInstance();
+        if (pi == nullptr || pi->getBusCount (false) < 2) continue;
+        auto layout = pi->getBusesLayout();
+        bool extraOn = false;
+        for (int i = 1; i < layout.outputBuses.size(); ++i)
+            if (! layout.outputBuses.getReference (i).isDisabled()) { extraOn = true; layout.outputBuses.getReference (i) = juce::AudioChannelSet::disabled(); }
+        if (! extraOn || layout.outputBuses.getReference (0).isDisabled() || ! pi->checkBusesLayoutSupported (layout)) continue;   // a plug-in that refuses is left alone (no retry every tick)
+        if (ext->setBusesLayout (layout)) ++fixed;
+    }
+    return fixed;
+}

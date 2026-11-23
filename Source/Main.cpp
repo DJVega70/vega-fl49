@@ -476,6 +476,7 @@ private:
         if (sig != midiInputsSeen) { const bool first = midiInputsSeen.isEmpty(); midiInputsSeen = sig; if (! first) setupInputs(); }
         // a keyboard that was switched on a moment ago only shows up in the edit once the engine has opened it:
         // keep checking, so its keys always end up on the selected instrument instead of "not connected to a track"
+        session.fixMultiOutPlugins();   // per-voice drum outs etc. -> the track's main output
         if (++routeTicks >= 2) { routeTicks = 0; if (keysUnrouted()) routeMidiToSelectedTrack(); else stripRawFl49Targets(); }
     }
     int routeTicks = 0;

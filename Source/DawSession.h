@@ -65,6 +65,11 @@ public:
     te::Plugin::Ptr addPlugin (te::AudioTrack&, const juce::String& type, const juce::PluginDescription* desc = nullptr, int index = -1);
     te::Plugin::Ptr setInstrument (te::AudioTrack&, const juce::String& type, const juce::PluginDescription* desc = nullptr);
     juce::Array<te::Plugin*> getInsertPlugins (te::AudioTrack&) const;
+    /** Plug-ins with extra output buses (drum machines with per-voice outs, ...) send those voices to buses
+        nothing listens to: Tracktion switches every bus on when it loads a plug-in, but a track only plays the
+        main stereo output. This switches the extra outputs off so everything comes out of the main one.
+        Returns how many plug-ins it changed; cheap to call often (it only acts on plug-ins that need it). */
+    int fixMultiOutPlugins();
     VegaDJEQPlugin* djEq (te::AudioTrack&, bool create = true);
     VegaMasterStripPlugin* masterStrip (bool create = true);
     VegaTapeMachinePlugin* masterTape (bool create = true);                // the reel-to-reel on the master bus (before the master strip)               // EQ / dynamics on the master bus            // the channel's DJ EQ / filter (always present, sits before the fader)      // user plugins, excludes volume/meter/aux
