@@ -237,7 +237,7 @@ private:
         }
         repaint();
     }
-    static float ballistics (float cur, float db) { return db > cur ? cur + (db - cur) * 0.7f : std::max (db, cur - 1.2f); }
+    static float ballistics (float cur, float db) { return db > cur ? db : std::max (db, cur - 1.2f); }
 
     void bank (int dir)
     {

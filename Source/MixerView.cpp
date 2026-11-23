@@ -409,12 +409,12 @@ public:
             for (int c = 0; c < 2; ++c)
             {
                 const float db = client.getAndClearAudioLevel (c).dB;
-                level[c] = db > level[c] ? level[c] + (db - level[c]) * 0.6f : std::max (db, level[c] - 0.9f);
+                level[c] = db > level[c] ? db : std::max (db, level[c] - 1.1f);      // instant attack, ~40 dB/s release
                 hold[c] = level[c] >= hold[c] ? level[c] : hold[c] - 0.4f;
             }
         // VU: slow (300 ms-ish) ballistics on the louder side
         const float target = juce::jlimit (-20.0f, 3.0f, std::max (level[0], level[1]) + 6.0f);
-        vu += (target - vu) * 0.18f;
+        vu += (target - vu) * (target > vu ? 0.5f : 0.3f);
         const bool sel = track != nullptr && vs.selectedTrack == track->itemID;
         if (sel != wasSelected) { wasSelected = sel; fader.lit = sel; fader.repaint(); repaint(); }
         repaint (meterArea.expanded (2)); repaint (vuArea);
@@ -821,20 +821,26 @@ private:
     float angleAt (juce::Point<float> p) const { const auto c = getLocalBounds().toFloat().getCentre(); return std::atan2 (p.x - c.x, c.y - p.y); }
     float angle = 0, lastAngle = 0, lastY = 0;
 };
-/** Reel-to-reel tape machine, drawn like real hardware: walnut cheeks, brushed-aluminium plate, machined
-    silver reels (the tape packs shrink / grow as the song plays), chrome rollers and heads, a backlit VU meter
-    following the master level, and a counter showing bars | beats.
-    Drag either reel (or use the wheel) to move the playhead, or scrub with SCRUB lit. */
+/** The master tape machine, drawn like real hardware: walnut cheeks, brushed-aluminium plate, a backlit VU
+    following the master level and a bars | beats counter. Two looks (right-click to switch):
+      - Reel to reel: machined silver reels (the tape packs shrink / grow as the song plays), rollers and heads.
+      - Cassette: a Vega C-90 in a chrome-trimmed well, hubs turning behind the label window.
+    Everything that doesn't move is drawn once into cached images, so a frame costs only the moving parts.
+    Drag a reel / hub (or use the wheel) to move the playhead. */
 class TapeDeck : public juce::Component, public juce::SettableTooltipClient
 {
 public:
+    enum Style { reelToReel = 0, cassette = 1 };
     std::function<void (double turns)> onTurn;
     std::function<void (bool)> onTouch;
+    std::function<void (int)> onStyleChanged;
+
     void update (double posSec, double lenSec, bool isPlaying, bool isRecording, const juce::String& counterText)
     {
         const double len = std::max ({ lenSec, posSec + 30.0, 60.0 });
         const bool needleMoving = std::abs (vu - vuTarget) > 0.05f;
-        vu += (vuTarget - vu) * 0.3f;      // VU ballistics: a slow, damped needle
+        // VU ballistics: quick enough to follow the beat (about 100 ms), still a damped needle
+        vu += (vuTarget - vu) * (vuTarget > vu ? 0.55f : 0.35f);
         if (! needleMoving && std::abs (posSec - pos) < 1e-4 && len == length && isPlaying == playing && isRecording == recording && counterText == counter) return;
         pos = posSec; length = len; playing = isPlaying; recording = isRecording; counter = counterText;
         repaint();
@@ -842,79 +848,34 @@ public:
     /** master level in dBFS (0 VU = -18 dBFS) */
     void setLevel (float dbfs) { vuTarget = juce::jlimit (-30.0f, 6.0f, dbfs + 18.0f); }
 
+    void setStyle (int s)
+    {
+        s = juce::jlimit (0, 1, s);
+        if (s == style) return;
+        style = s; invalidate(); repaint();
+        if (onStyleChanged) onStyleChanged (style);
+    }
+    int getStyle() const { return style; }
+
     // kept for the DRIVE / IPS / CAL knobs and other parts that used the old palette
     static inline const juce::Colour gold { 0xff7ff7f2 }, goldHi { 0xffdcfffd }, goldLo { 0xff1c5f5c };
 
-    void resized() override { background = {}; }
+    void resized() override { invalidate(); }
     void paint (juce::Graphics& g) override
     {
         const float scale = g.getInternalContext().getPhysicalPixelScaleFactor();
-        if (background.isNull() || std::abs (backgroundScale - scale) > 0.01f) renderBackground (scale);
+        if (background.isNull() || std::abs (backgroundScale - scale) > 0.01f) { invalidate(); renderBackground (scale); }
         g.drawImage (background, getLocalBounds().toFloat());
+        const auto geo = layout();
 
-        const auto plate = plateArea();
-        const float reelR = reelRadius = std::min (plate.getHeight() * 0.45f, plate.getWidth() * 0.2f);
-        const juce::Point<float> lc (plate.getX() + reelR + 2.0f, plate.getY() + reelR + 4.0f);
-        const juce::Point<float> rc (plate.getRight() - reelR - 2.0f, lc.y);
-        reelCentres[0] = lc; reelCentres[1] = rc;
-        const float hubR = reelR * 0.26f, packMin = reelR * 0.34f, packMax = reelR * 0.9f;
-        const double f = juce::jlimit (0.0, 1.0, pos / length);
-        const float packL = (float) std::sqrt (packMin * packMin + (packMax * packMax - packMin * packMin) * (1.0 - f));
-        const float packR = (float) std::sqrt (packMin * packMin + (packMax * packMax - packMin * packMin) * f);
         const float tapePx = (float) pos * 38.0f * ipsFactor;
-        const float angL = -tapePx / packL, angR = -tapePx / packR;
-        const float cx = plate.getCentreX();
+        const double f = juce::jlimit (0.0, 1.0, pos / length);
+        if (style == reelToReel) paintReels (g, geo, f, tapePx, scale);
+        else                     paintCassette (g, geo, f, tapePx);
 
-        // ---- tape path: off each pack on a tangent, round the chrome guide rollers, across the heads
-        const float rr = 6.5f, rollerY = plate.getBottom() - 46.0f;
-        const juce::Point<float> gl (cx - 40.0f, rollerY), gr (cx + 40.0f, rollerY);
-        auto tangentFrom = [] (juce::Point<float> p, juce::Point<float> c, float rad, bool wantRight)
-        {
-            const auto v = p - c; const float d = v.getDistanceFromOrigin();
-            if (d <= rad + 0.5f) return c;
-            const float base = std::atan2 (v.y, v.x), al = std::acos (rad / d);
-            const juce::Point<float> t1 (c.x + rad * std::cos (base + al), c.y + rad * std::sin (base + al));
-            const juce::Point<float> t2 (c.x + rad * std::cos (base - al), c.y + rad * std::sin (base - al));
-            return (t1.x > t2.x) == wantRight ? t1 : t2;
-        };
-        const juce::Point<float> pl (gl.x - rr, gl.y), pr (gr.x + rr, gr.y);
-        const auto tL = tangentFrom (pl, lc, packL, true), tR = tangentFrom (pr, rc, packR, false);
-        // head assembly (behind the tape): chrome cover with three heads, capstan + rubber pinch roller
-        auto heads = juce::Rectangle<float> (62.0f, 18.0f).withCentre ({ cx, rollerY + rr + 9.0f });
-        chromeBox (g, heads, 3.0f);
-        for (int k = -1; k <= 1; ++k)
-        {
-            auto h = juce::Rectangle<float> (12.0f, 7.0f).withCentre ({ cx + k * 17.0f, heads.getY() + 4.5f });
-            g.setGradientFill (juce::ColourGradient (juce::Colour (0xff5a5d60), h.getX(), h.getY(), juce::Colour (0xff1b1c1e), h.getX(), h.getBottom(), false));
-            g.fillRoundedRectangle (h, 2.0f);
-            g.setColour (juce::Colour (0xff0a0a0a)); g.drawVerticalLine ((int) h.getCentreX(), h.getY() + 1, h.getBottom() - 1);   // the head gap
-        }
-        juce::Path tape;
-        tape.startNewSubPath (tL); tape.lineTo (pl);
-        tape.addCentredArc (gl.x, gl.y, rr, rr, 0, juce::MathConstants<float>::pi * 1.5f, juce::MathConstants<float>::pi, false);
-        tape.lineTo (gr.x, gr.y + rr);
-        tape.addCentredArc (gr.x, gr.y, rr, rr, 0, juce::MathConstants<float>::pi, juce::MathConstants<float>::pi * 0.5f, false);
-        tape.lineTo (tR);
-        g.setColour (juce::Colours::black.withAlpha (0.35f)); g.strokePath (tape, juce::PathStrokeType (3.2f), juce::AffineTransform::translation (0.0f, 1.5f));
-        g.setColour (juce::Colour (0xff3b2414)); g.strokePath (tape, juce::PathStrokeType (2.6f));
-        g.setColour (juce::Colour (0xff8a5d3b).withAlpha (0.55f)); g.strokePath (tape, juce::PathStrokeType (0.8f));
-        chromeRoller (g, gl, rr); chromeRoller (g, gr, rr);
-        chromeRoller (g, { heads.getRight() + 7.0f, heads.getCentreY() + 2.0f }, 3.6f);        // capstan
-        {   // rubber pinch roller
-            const juce::Point<float> pc (heads.getRight() + 16.0f, heads.getCentreY() + 2.0f); const float pr2 = 5.5f;
-            g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3a3a3c), pc.x - pr2, pc.y - pr2, juce::Colour (0xff070707), pc.x + pr2, pc.y + pr2, false));
-            g.fillEllipse (pc.x - pr2, pc.y - pr2, pr2 * 2, pr2 * 2);
-            chromeRoller (g, pc, 2.0f);
-        }
-
-        drawReel (g, lc, reelR, hubR, packL, angL);
-        drawReel (g, rc, reelR, hubR, packR, angR);
-
-        // ---- backlit VU meter between the reels
-        drawVU (g, juce::Rectangle<float> (88.0f, 52.0f).withCentre ({ cx, plate.getY() + 32.0f }), vu, on, on ? "VEGA TAPE  " + ipsText : juce::String ("BYPASSED"));
-
-        // ---- counter window + play / rec jewels
-        auto cnt = juce::Rectangle<float> (70.0f, 15.0f).withCentre ({ cx, plate.getY() + 70.0f });
+        // VU (static face cached, needle live) + counter + jewels
+        drawVU (g, geo.vu, scale);
+        auto cnt = geo.counter;
         g.setColour (juce::Colour (0xff6d7174)); g.fillRoundedRectangle (cnt.expanded (2.0f), 3.0f);
         g.setGradientFill (juce::ColourGradient (juce::Colour (0xff050505), cnt.getX(), cnt.getY(), juce::Colour (0xff1d1d1f), cnt.getX(), cnt.getBottom(), false));
         g.fillRoundedRectangle (cnt, 2.0f);
@@ -923,12 +884,26 @@ public:
         g.setColour (juce::Colours::white.withAlpha (0.10f)); g.fillRoundedRectangle (cnt.withHeight (cnt.getHeight() * 0.45f), 2.0f);
         jewel (g, { cnt.getX() - 9.0f, cnt.getCentreY() }, playing, juce::Colour (0xff4cff6a));
         jewel (g, { cnt.getRight() + 9.0f, cnt.getCentreY() }, recording, juce::Colour (0xffff3b30));
-
     }
-    void mouseDown (const juce::MouseEvent& e) override { lastAngle = angleAt (e.position); lastY = e.position.y; if (onTouch) onTouch (true); }
-    void mouseUp (const juce::MouseEvent&) override { if (onTouch) onTouch (false); }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu())
+        {
+            juce::PopupMenu m;
+            m.addSectionHeader ("Tape machine look");
+            m.addItem (1, "Reel to reel", true, style == reelToReel);
+            m.addItem (2, "Cassette", true, style == cassette);
+            m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this), [sp = juce::Component::SafePointer<TapeDeck> (this)] (int r)
+                             { if (sp != nullptr && r > 0) sp->setStyle (r - 1); });
+            return;
+        }
+        dragging = true; lastAngle = angleAt (e.position); lastY = e.position.y; if (onTouch) onTouch (true);
+    }
+    void mouseUp (const juce::MouseEvent&) override { if (dragging && onTouch) onTouch (false); dragging = false; }
     void mouseDrag (const juce::MouseEvent& e) override
     {
+        if (! dragging) return;
         double delta;
         const auto c = nearestReel (e.position);
         if (e.position.getDistanceFrom (c) > reelRadius * 0.2f)
@@ -949,7 +924,54 @@ private:
     static constexpr float cheekW = 15.0f;
     juce::Rectangle<float> plateArea() const { return getLocalBounds().toFloat().reduced (2.0f).withTrimmedLeft (cheekW).withTrimmedRight (cheekW); }
 
-    // ---------------------------------------------------------------- the static parts (cached)
+    struct Geo
+    {
+        juce::Rectangle<float> plate, vu, counter, plaque;
+        // reel to reel
+        juce::Point<float> lc, rc; float r = 60, hubR = 15, rr = 6; juce::Point<float> gl, gr; juce::Rectangle<float> heads;
+        // cassette (u = one millimetre of a real 100 x 63.8 mm cassette)
+        juce::Rectangle<float> well, shell; float u = 2; juce::Point<float> hubL, hubR2; juce::Path window;
+    };
+    Geo layout() const
+    {
+        Geo o; o.plate = plateArea();
+        const auto& p = o.plate;
+        if (style == reelToReel)
+        {
+            // two reels with a proper gap between them for the meter, counter and head block
+            o.r = std::min (p.getHeight() * 0.39f, p.getWidth() * 0.165f);
+            o.hubR = o.r * 0.26f;
+            o.lc = { p.getX() + 9.0f + o.r, p.getY() + 8.0f + o.r };
+            o.rc = { p.getRight() - 9.0f - o.r, o.lc.y };
+            const float cx = p.getCentreX();
+            o.vu = juce::Rectangle<float> (100.0f, 56.0f).withCentre ({ cx, p.getY() + 8.0f + 28.0f });
+            o.counter = juce::Rectangle<float> (72.0f, 15.0f).withCentre ({ cx, o.vu.getBottom() + 13.0f });
+            o.rr = 6.0f;
+            const float rollerY = o.lc.y + o.r * 0.6f;
+            o.gl = { cx - 46.0f, rollerY }; o.gr = { cx + 46.0f, rollerY };
+            o.heads = juce::Rectangle<float> (64.0f, 18.0f).withCentre ({ cx, rollerY + o.rr + 9.0f });
+            o.plaque = juce::Rectangle<float> (118.0f, 15.0f).withCentre ({ cx, p.getBottom() - 11.0f });
+        }
+        else
+        {
+            const float h = p.getHeight() - 16.0f, w = h * (100.0f / 63.8f) + 8.0f;
+            o.well = { p.getX() + 8.0f, p.getY() + 8.0f, w, h };
+            o.shell = o.well.reduced (4.0f);
+            o.u = o.shell.getWidth() / 100.0f;
+            auto at = [&] (float x, float y) { return juce::Point<float> (o.shell.getX() + x * o.u, o.shell.getY() + y * o.u); };
+            o.hubL = at (28.75f, 27.5f); o.hubR2 = at (71.25f, 27.5f);
+            o.window.addRoundedRectangle (juce::Rectangle<float> (at (20.0f, 19.0f), at (80.0f, 36.0f)), 8.5f * o.u);
+            const auto side = juce::Rectangle<float> (o.well.getRight() + 8.0f, p.getY() + 8.0f, p.getRight() - o.well.getRight() - 16.0f, h);
+            o.vu = juce::Rectangle<float> (std::min (side.getWidth(), 112.0f), 62.0f).withCentre ({ side.getCentreX(), side.getY() + 31.0f });
+            o.counter = juce::Rectangle<float> (72.0f, 15.0f).withCentre ({ side.getCentreX(), o.vu.getBottom() + 16.0f });
+            o.plaque = juce::Rectangle<float> (std::min (side.getWidth() - 6.0f, 112.0f), 15.0f).withCentre ({ side.getCentreX(), p.getBottom() - 11.0f });
+        }
+        return o;
+    }
+
+    void invalidate() { background = {}; vuFace = {}; for (auto& rc : reelCache) rc = {}; }
+
+    // ---------------------------------------------------------------- the static parts (cached once)
     void renderBackground (float scale)
     {
         backgroundScale = scale;
@@ -963,9 +985,8 @@ private:
         }
         auto body = r.reduced (2.0f);
         juce::Random rnd (1972);
-        // walnut cheeks with grain and a varnish shine
         for (int side = 0; side < 2; ++side)
-        {
+        {   // walnut cheeks with grain and a varnish shine
             auto ch = side == 0 ? body.withWidth (cheekW + 4.0f) : body.withLeft (body.getRight() - cheekW - 4.0f);
             g.setGradientFill (juce::ColourGradient (juce::Colour (0xff6b3a20), ch.getX(), ch.getY(), juce::Colour (0xff3a1b0d), ch.getRight(), ch.getBottom(), false));
             g.fillRoundedRectangle (ch, 4.0f);
@@ -988,7 +1009,8 @@ private:
             g.setColour (juce::Colours::black.withAlpha (0.6f)); g.drawRoundedRectangle (ch.reduced (0.5f), 4.0f, 1.0f);
         }
         // brushed aluminium plate
-        auto plate = plateArea();
+        const auto geo = layout();
+        auto plate = geo.plate;
         g.setGradientFill (juce::ColourGradient (juce::Colour (0xffd3d6d8), plate.getX(), plate.getY(), juce::Colour (0xff8e9296), plate.getX(), plate.getBottom(), false));
         g.fillRect (plate);
         for (float y = plate.getY(); y < plate.getBottom(); y += 1.0f)
@@ -997,7 +1019,7 @@ private:
             const float x0 = plate.getX() + rnd.nextFloat() * plate.getWidth() * 0.3f;
             g.drawHorizontalLine ((int) y, x0, std::min (plate.getRight(), x0 + plate.getWidth() * (0.5f + rnd.nextFloat())));
         }
-        {   // a broad soft reflection across the metal
+        {
             juce::ColourGradient refl (juce::Colours::white.withAlpha (0.0f), plate.getX(), plate.getY(), juce::Colours::white.withAlpha (0.0f), plate.getRight(), plate.getBottom(), false);
             refl.addColour (0.42, juce::Colours::white.withAlpha (0.16f)); refl.addColour (0.5, juce::Colours::white.withAlpha (0.04f));
             g.setGradientFill (refl); g.fillRect (plate);
@@ -1005,19 +1027,331 @@ private:
         g.setColour (juce::Colours::white.withAlpha (0.55f)); g.drawHorizontalLine ((int) plate.getY(), plate.getX(), plate.getRight());
         g.setColour (juce::Colours::black.withAlpha (0.5f)); g.drawHorizontalLine ((int) plate.getBottom() - 1, plate.getX(), plate.getRight());
         g.setColour (juce::Colours::black.withAlpha (0.45f)); g.drawRect (plate, 1.0f);
-        // recessed reel wells (subtle) and the transport screws
         for (auto sc : { plate.getTopLeft().translated (6, 6), plate.getTopRight().translated (-6, 6), plate.getBottomLeft().translated (6, -6), plate.getBottomRight().translated (-6, -6) })
             screw (g, sc, 3.0f, rnd.nextFloat() * 3.0f);
-        // nameplate: a small chrome plaque, engraved script
-        auto plaque = juce::Rectangle<float> (112.0f, 15.0f).withCentre ({ plate.getCentreX(), plate.getBottom() - 11.0f });
+
+        if (style == reelToReel)
+        {
+            // shadows the reels and hubs cast (round, so they don't change as the reels turn)
+            for (auto c : { geo.lc, geo.rc })
+            {
+                juce::Path sh; sh.addEllipse (c.x - geo.r, c.y - geo.r + 4, geo.r * 2, geo.r * 2);
+                juce::DropShadow (juce::Colours::black.withAlpha (0.55f), 12, {}).drawForPath (g, sh);
+                g.setColour (juce::Colours::black.withAlpha (0.12f)); g.fillEllipse (c.x - geo.r - 3, c.y - geo.r - 3, geo.r * 2 + 6, geo.r * 2 + 6);
+            }
+            // head block: chrome cover with three heads, capstan + rubber pinch roller, guide-roller shadows
+            const float cx = geo.heads.getCentreX();
+            chromeBox (g, geo.heads, 3.0f);
+            for (int k = -1; k <= 1; ++k)
+            {
+                auto h = juce::Rectangle<float> (12.0f, 7.0f).withCentre ({ cx + k * 17.0f, geo.heads.getY() + 4.5f });
+                g.setGradientFill (juce::ColourGradient (juce::Colour (0xff5a5d60), h.getX(), h.getY(), juce::Colour (0xff1b1c1e), h.getX(), h.getBottom(), false));
+                g.fillRoundedRectangle (h, 2.0f);
+                g.setColour (juce::Colour (0xff0a0a0a)); g.drawVerticalLine ((int) h.getCentreX(), h.getY() + 1, h.getBottom() - 1);
+            }
+            for (auto c : { geo.gl, geo.gr })
+            { juce::Path sh; sh.addEllipse (c.x - geo.rr, c.y - geo.rr + 1.5f, geo.rr * 2, geo.rr * 2); juce::DropShadow (juce::Colours::black.withAlpha (0.55f), 4, {}).drawForPath (g, sh); }
+            chromeRoller (g, { geo.heads.getRight() + 7.0f, geo.heads.getCentreY() + 2.0f }, 3.6f);   // capstan
+            {
+                const juce::Point<float> pc (geo.heads.getRight() + 17.0f, geo.heads.getCentreY() + 2.0f); const float pr2 = 5.5f;
+                g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3a3a3c), pc.x - pr2, pc.y - pr2, juce::Colour (0xff070707), pc.x + pr2, pc.y + pr2, false));
+                g.fillEllipse (pc.x - pr2, pc.y - pr2, pr2 * 2, pr2 * 2);
+                chromeRoller (g, pc, 2.0f);
+            }
+        }
+        else
+            renderCassetteStatic (g, geo, rnd);
+
+        // nameplate
+        auto plaque = geo.plaque;
         g.setColour (juce::Colours::black.withAlpha (0.35f)); g.fillRoundedRectangle (plaque.translated (0, 1.5f), 7.0f);
         g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3a3c3f), plaque.getX(), plaque.getY(), juce::Colour (0xff17181a), plaque.getX(), plaque.getBottom(), false));
         g.fillRoundedRectangle (plaque, 7.0f);
         g.setColour (juce::Colour (0xffb9bdc0)); g.drawRoundedRectangle (plaque, 7.0f, 1.0f);
         g.setFont (juce::FontOptions ("Georgia", 10.0f, juce::Font::italic));
-        g.setColour (juce::Colour (0xffe9e6dc)); g.drawFittedText ("Vega Reel to Reel", plaque.toNearestInt(), juce::Justification::centred, 1, 0.8f);
+        g.setColour (juce::Colour (0xffe9e6dc));
+        g.drawFittedText (style == reelToReel ? "Vega Reel to Reel" : "Vega Cassette", plaque.toNearestInt(), juce::Justification::centred, 1, 0.8f);
     }
 
+    // ---------------------------------------------------------------- reel to reel (moving parts)
+    void paintReels (juce::Graphics& g, const Geo& geo, double f, float tapePx, float scale)
+    {
+        const float packMin = geo.r * 0.34f, packMax = geo.r * 0.9f;
+        const float packL = (float) std::sqrt (packMin * packMin + (packMax * packMax - packMin * packMin) * (1.0 - f));
+        const float packR = (float) std::sqrt (packMin * packMin + (packMax * packMax - packMin * packMin) * f);
+        reelCentres[0] = geo.lc; reelCentres[1] = geo.rc; reelRadius = geo.r;
+
+        // tape path: off each pack on a tangent, round the guide rollers, across the heads
+        auto tangentFrom = [] (juce::Point<float> p, juce::Point<float> c, float rad, bool wantRight)
+        {
+            const auto v = p - c; const float d = v.getDistanceFromOrigin();
+            if (d <= rad + 0.5f) return c;
+            const float base = std::atan2 (v.y, v.x), al = std::acos (rad / d);
+            const juce::Point<float> t1 (c.x + rad * std::cos (base + al), c.y + rad * std::sin (base + al));
+            const juce::Point<float> t2 (c.x + rad * std::cos (base - al), c.y + rad * std::sin (base - al));
+            return (t1.x > t2.x) == wantRight ? t1 : t2;
+        };
+        const float rr = geo.rr;
+        const juce::Point<float> pl (geo.gl.x - rr, geo.gl.y), pr (geo.gr.x + rr, geo.gr.y);
+        const auto tL = tangentFrom (pl, geo.lc, packL, true), tR = tangentFrom (pr, geo.rc, packR, false);
+        juce::Path tape;
+        tape.startNewSubPath (tL); tape.lineTo (pl);
+        tape.addCentredArc (geo.gl.x, geo.gl.y, rr, rr, 0, juce::MathConstants<float>::pi * 1.5f, juce::MathConstants<float>::pi, false);
+        tape.lineTo (geo.gr.x, geo.gr.y + rr);
+        tape.addCentredArc (geo.gr.x, geo.gr.y, rr, rr, 0, juce::MathConstants<float>::pi, juce::MathConstants<float>::pi * 0.5f, false);
+        tape.lineTo (tR);
+        g.setColour (juce::Colours::black.withAlpha (0.35f)); g.strokePath (tape, juce::PathStrokeType (3.2f), juce::AffineTransform::translation (0.0f, 1.5f));
+        g.setColour (juce::Colour (0xff3b2414)); g.strokePath (tape, juce::PathStrokeType (2.6f));
+        g.setColour (juce::Colour (0xff8a5d3b).withAlpha (0.55f)); g.strokePath (tape, juce::PathStrokeType (0.8f));
+        chromeRollerFace (g, geo.gl, rr); chromeRollerFace (g, geo.gr, rr);
+
+        drawReel (g, 0, geo.lc, geo.r, geo.hubR, packL, -tapePx / packL, scale);
+        drawReel (g, 1, geo.rc, geo.r, geo.hubR, packR, -tapePx / packR, scale);
+    }
+
+    struct ReelCache { juce::Image flange, hub, pack; float packKey = -1.0f; };
+    ReelCache reelCache[2];
+
+    static juce::Image makeImage (float w, float h, float scale)
+    {
+        return juce::Image (juce::Image::ARGB, std::max (1, juce::roundToInt (w * scale)), std::max (1, juce::roundToInt (h * scale)), true);
+    }
+
+    /** A machined aluminium NAB-style reel. The metal (lighting, tooling marks, rim) and the hub are cached
+        unrotated - the light stays put, like on a real reel - and the turning cut-outs are a clip path. */
+    void drawReel (juce::Graphics& g, int idx, juce::Point<float> c, float r, float hubR, float pack, float ang, float scale)
+    {
+        auto& rc = reelCache[idx];
+        auto pt = [&] (float rad, float a) { return juce::Point<float> (c.x + std::sin (a) * rad, c.y - std::cos (a) * rad); };
+        const float box = r * 2 + 4;
+        if (rc.flange.isNull())
+        {
+            rc.flange = makeImage (box, box, scale);
+            juce::Graphics ig (rc.flange); ig.addTransform (juce::AffineTransform::scale (scale));
+            const juce::Point<float> o (r + 2, r + 2);
+            auto opt = [&] (float rad, float a) { return juce::Point<float> (o.x + std::sin (a) * rad, o.y - std::cos (a) * rad); };
+            juce::ColourGradient fg (juce::Colour (0xffe9ebec), o.x - r * 0.7f, o.y - r * 0.8f, juce::Colour (0xff7d8185), o.x + r * 0.8f, o.y + r * 0.9f, false);
+            fg.addColour (0.5, juce::Colour (0xffbfc2c5));
+            ig.setGradientFill (fg); ig.fillEllipse (o.x - r, o.y - r, r * 2, r * 2);
+            for (float q = hubR; q < r; q += 1.3f)
+            {
+                ig.setColour ((((int) (q * 3.1f)) % 2 == 0 ? juce::Colours::white : juce::Colours::black).withAlpha (0.045f));
+                ig.drawEllipse (o.x - q, o.y - q, q * 2, q * 2, 0.7f);
+            }
+            for (float base : { -0.78f, 2.36f })
+            {
+                juce::Path wedge; wedge.addPieSegment (o.x - r, o.y - r, r * 2, r * 2, base - 0.32f, base + 0.32f, 0.0f);
+                ig.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.42f), o.x, o.y, juce::Colours::white.withAlpha (0.05f), opt (r, base).x, opt (r, base).y, true));
+                ig.fillPath (wedge);
+            }
+            for (float base : { 0.78f, -2.36f })
+            {
+                juce::Path wedge; wedge.addPieSegment (o.x - r, o.y - r, r * 2, r * 2, base - 0.3f, base + 0.3f, 0.0f);
+                ig.setColour (juce::Colours::black.withAlpha (0.10f)); ig.fillPath (wedge);
+            }
+            ig.setColour (juce::Colours::white.withAlpha (0.6f)); ig.drawEllipse (o.x - r + 1.2f, o.y - r + 1.2f, r * 2 - 2.4f, r * 2 - 2.4f, 1.0f);
+            ig.setColour (juce::Colour (0xff3d4043)); ig.drawEllipse (o.x - r, o.y - r, r * 2, r * 2, 1.2f);
+
+            // the hub: chrome dome with tooling rings (the keys are drawn live, they turn)
+            const float hb = hubR * 2 + 4;
+            rc.hub = makeImage (hb, hb, scale);
+            juce::Graphics hg2 (rc.hub); hg2.addTransform (juce::AffineTransform::scale (scale));
+            const juce::Point<float> h0 (hubR + 2, hubR + 2);
+            juce::ColourGradient hg (juce::Colour (0xffffffff), h0.x - hubR * 0.5f, h0.y - hubR * 0.6f, juce::Colour (0xff5c6064), h0.x + hubR * 0.6f, h0.y + hubR * 0.8f, true);
+            hg.addColour (0.55, juce::Colour (0xffaeb2b5));
+            hg2.setGradientFill (hg); hg2.fillEllipse (h0.x - hubR, h0.y - hubR, hubR * 2, hubR * 2);
+            for (float q = hubR * 0.3f; q < hubR; q += 1.2f)
+            { hg2.setColour (juce::Colours::black.withAlpha (0.05f)); hg2.drawEllipse (h0.x - q, h0.y - q, q * 2, q * 2, 0.5f); }
+            hg2.setColour (juce::Colours::black.withAlpha (0.5f)); hg2.drawEllipse (h0.x - hubR, h0.y - hubR, hubR * 2, hubR * 2, 0.8f);
+        }
+        if (std::abs (rc.packKey - pack) > 0.4f || rc.pack.isNull())
+        {   // the brown tape pack, re-drawn only when its size changes noticeably
+            rc.packKey = pack;
+            const float pb = pack * 2 + 4;
+            rc.pack = makeImage (pb, pb, scale);
+            juce::Graphics pg (rc.pack); pg.addTransform (juce::AffineTransform::scale (scale));
+            const juce::Point<float> o (pack + 2, pack + 2);
+            pg.setGradientFill (juce::ColourGradient (juce::Colour (0xff6a4632), o.x - pack, o.y - pack, juce::Colour (0xff22140b), o.x + pack, o.y + pack, false));
+            pg.fillEllipse (o.x - pack, o.y - pack, pack * 2, pack * 2);
+            for (float q = hubR * 1.1f; q < pack; q += 1.5f)
+            { pg.setColour (juce::Colours::black.withAlpha (((int) (q * 7.0f)) % 3 == 0 ? 0.2f : 0.08f)); pg.drawEllipse (o.x - q, o.y - q, q * 2, q * 2, 0.5f); }
+            juce::Path sheen; sheen.addPieSegment (o.x - pack, o.y - pack, pack * 2, pack * 2, -1.0f, -0.25f, hubR * 1.1f / pack);
+            pg.setColour (juce::Colours::white.withAlpha (0.12f)); pg.fillPath (sheen);
+            pg.setColour (juce::Colours::black.withAlpha (0.55f)); pg.drawEllipse (o.x - pack, o.y - pack, pack * 2, pack * 2, 1.0f);
+        }
+        g.drawImage (rc.pack, juce::Rectangle<float> (c.x - pack - 2, c.y - pack - 2, pack * 2 + 4, pack * 2 + 4));
+
+        // flange with three windows, turning with the reel
+        juce::Path flange; flange.addEllipse (c.x - r, c.y - r, r * 2, r * 2);
+        juce::Path windows;
+        for (int k = 0; k < 3; ++k)
+        {
+            const float a0 = ang + k * juce::MathConstants<float>::twoPi / 3.0f;
+            juce::Path w;
+            w.startNewSubPath (pt (hubR * 1.45f, a0 - 0.42f)); w.lineTo (pt (r * 0.87f, a0 - 0.62f));
+            w.lineTo (pt (r * 0.87f, a0 + 0.62f)); w.lineTo (pt (hubR * 1.45f, a0 + 0.42f)); w.closeSubPath();
+            windows.addPath (w.createPathWithRoundedCorners (r * 0.12f));
+        }
+        flange.setUsingNonZeroWinding (false); flange.addPath (windows);
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            g.reduceClipRegion (flange);
+            g.drawImage (rc.flange, juce::Rectangle<float> (c.x - r - 2, c.y - r - 2, box, box));
+        }
+        g.setColour (juce::Colours::white.withAlpha (0.55f)); g.strokePath (windows, juce::PathStrokeType (1.2f), juce::AffineTransform::translation (0.7f, 0.7f));
+        g.setColour (juce::Colours::black.withAlpha (0.55f)); g.strokePath (windows, juce::PathStrokeType (1.0f), juce::AffineTransform::translation (-0.6f, -0.6f));
+        {   // engraved maker's mark between two windows
+            juce::Graphics::ScopedSaveState ss (g);
+            g.addTransform (juce::AffineTransform::rotation (ang + juce::MathConstants<float>::pi / 3.0f, c.x, c.y));
+            g.setFont (juce::FontOptions ("Georgia", r * 0.15f, juce::Font::bold | juce::Font::italic));
+            auto tb = juce::Rectangle<float> (r * 0.8f, r * 0.18f).withCentre ({ c.x, c.y - r * 0.66f });
+            g.setColour (juce::Colours::white.withAlpha (0.6f)); g.drawText ("Vega", tb.translated (0, 0.8f), juce::Justification::centred);
+            g.setColour (juce::Colour (0xff4a4d50)); g.drawText ("Vega", tb, juce::Justification::centred);
+        }
+        // hub (cached) + turning spindle keys
+        g.setColour (juce::Colours::black.withAlpha (0.3f)); g.fillEllipse (c.x - hubR - 1, c.y - hubR + 1, hubR * 2 + 2, hubR * 2 + 2);
+        g.drawImage (rc.hub, juce::Rectangle<float> (c.x - hubR - 2, c.y - hubR - 2, hubR * 2 + 4, hubR * 2 + 4));
+        for (int k = 0; k < 3; ++k)
+        {
+            const float a = ang + juce::MathConstants<float>::pi / 3.0f + k * juce::MathConstants<float>::twoPi / 3.0f;
+            juce::Path key; key.addRoundedRectangle (-hubR * 0.12f, -hubR * 0.78f, hubR * 0.24f, hubR * 0.36f, hubR * 0.06f);
+            key.applyTransform (juce::AffineTransform::rotation (a).translated (c.x, c.y));
+            g.setColour (juce::Colour (0xff2b2d30)); g.fillPath (key);
+        }
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff2e3134), c.x, c.y - hubR * 0.3f, juce::Colour (0xff0d0e0f), c.x, c.y + hubR * 0.3f, false));
+        g.fillEllipse (c.x - hubR * 0.28f, c.y - hubR * 0.28f, hubR * 0.56f, hubR * 0.56f);
+        g.setColour (juce::Colour (0xffd7dadc)); g.fillEllipse (c.x - hubR * 0.1f, c.y - hubR * 0.1f, hubR * 0.2f, hubR * 0.2f);
+    }
+
+    // ---------------------------------------------------------------- cassette
+    void renderCassetteStatic (juce::Graphics& g, const Geo& geo, juce::Random& rnd)
+    {
+        const float u = geo.u;
+        auto at = [&] (float x, float y) { return juce::Point<float> (geo.shell.getX() + x * u, geo.shell.getY() + y * u); };
+        // the well: chrome trim around a black recess
+        chromeBox (g, geo.well, 5.0f);
+        auto rec = geo.well.reduced (2.5f);
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff050506), rec.getX(), rec.getY(), juce::Colour (0xff1c1d1f), rec.getX(), rec.getBottom(), false));
+        g.fillRoundedRectangle (rec, 3.5f);
+        // the shell: smoked black plastic
+        auto sh = geo.shell;
+        { juce::Path p; p.addRoundedRectangle (sh.translated (0, 2), 3.0f * u); juce::DropShadow (juce::Colours::black.withAlpha (0.8f), 6, {}).drawForPath (g, p); }
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3a3b3f), sh.getX(), sh.getY(), juce::Colour (0xff17181a), sh.getX(), sh.getBottom(), false));
+        g.fillRoundedRectangle (sh, 3.0f * u);
+        for (int k = 0; k < 40; ++k)
+        {   // fine moulding texture
+            g.setColour (juce::Colours::white.withAlpha (0.012f + rnd.nextFloat() * 0.012f));
+            const float y = sh.getY() + rnd.nextFloat() * sh.getHeight();
+            g.drawHorizontalLine ((int) y, sh.getX() + 2, sh.getRight() - 2);
+        }
+        g.setColour (juce::Colours::white.withAlpha (0.18f)); g.drawRoundedRectangle (sh.reduced (0.6f), 3.0f * u, 0.8f);
+        g.setColour (juce::Colours::black.withAlpha (0.8f)); g.drawRoundedRectangle (sh, 3.0f * u, 1.0f);
+
+        // the paper label: cream, a red band like the VU's red zone, Vega Productions written on it
+        auto label = juce::Rectangle<float> (at (6.0f, 4.0f), at (94.0f, 44.0f));
+        g.setColour (juce::Colours::black.withAlpha (0.4f)); g.fillRoundedRectangle (label.translated (0, 0.8f), 1.5f * u);
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xfff6efd9), label.getX(), label.getY(), juce::Colour (0xffe0d3ad), label.getX(), label.getBottom(), false));
+        g.fillRoundedRectangle (label, 1.5f * u);
+        auto band = juce::Rectangle<float> (label.getX(), at (0, 38.5f).y, label.getWidth(), 3.0f * u);
+        g.setColour (juce::Colour (0xffc8261c)); g.fillRect (band);
+        g.setColour (juce::Colour (0xff1d1a14)); g.fillRect (band.withY (band.getBottom() + 0.6f * u).withHeight (0.7f * u));
+        // writing lines + title
+        g.setColour (juce::Colour (0xff1d1a14).withAlpha (0.25f));
+        g.drawHorizontalLine ((int) at (0, 14.0f).y, at (16.0f, 0).x, at (90.0f, 0).x);
+        g.setColour (juce::Colour (0xff1d1a14));
+        g.setFont (juce::FontOptions ("Georgia", 6.4f * u, juce::Font::bold | juce::Font::italic));
+        g.drawText ("Vega Productions", juce::Rectangle<float> (at (16.0f, 6.0f), at (90.0f, 14.0f)), juce::Justification::centredLeft);
+        // side "A" badge
+        auto sideA = juce::Rectangle<float> (at (8.0f, 6.0f), at (14.5f, 13.5f));
+        g.fillRoundedRectangle (sideA, 1.0f * u);
+        g.setColour (juce::Colour (0xfff6efd9)); g.setFont (juce::FontOptions (6.0f * u, juce::Font::bold));
+        g.drawText ("A", sideA, juce::Justification::centred);
+        g.setColour (juce::Colour (0xff1d1a14)); g.setFont (juce::FontOptions (3.6f * u, juce::Font::bold));
+        g.drawText ("C-90", juce::Rectangle<float> (at (78.0f, 30.0f), at (92.0f, 36.0f)), juce::Justification::centredRight);
+        g.drawText ("TYPE II", juce::Rectangle<float> (at (8.0f, 30.0f), at (28.0f, 36.0f)), juce::Justification::centredLeft);
+        // window frame (the inside is drawn live)
+        g.setColour (juce::Colour (0xff1d1a14)); g.strokePath (geo.window, juce::PathStrokeType (1.4f * u));
+
+        // bottom: raised trapezoid with the head opening, capstan holes and guide pins
+        juce::Path trap;
+        trap.startNewSubPath (at (16.0f, 50.0f)); trap.lineTo (at (84.0f, 50.0f));
+        trap.lineTo (at (89.0f, 63.8f)); trap.lineTo (at (11.0f, 63.8f)); trap.closeSubPath();
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff2c2d30), 0, at (0, 50).y, juce::Colour (0xff121314), 0, at (0, 63.8f).y, false));
+        g.fillPath (trap);
+        g.setColour (juce::Colours::white.withAlpha (0.15f)); g.drawLine (juce::Line<float> (at (16.0f, 50.0f), at (84.0f, 50.0f)), 0.8f);
+        g.setColour (juce::Colour (0xff3b2414)); g.fillRect (juce::Rectangle<float> (at (14.0f, 61.6f), at (86.0f, 62.6f)));   // the tape across the openings
+        for (float x : { 31.0f, 69.0f })
+        {   // capstan holes
+            auto h = juce::Rectangle<float> (3.0f * u, 3.0f * u).withCentre (at (x, 58.0f));
+            g.setColour (juce::Colour (0xff050505)); g.fillEllipse (h);
+            g.setColour (juce::Colours::white.withAlpha (0.15f)); g.drawEllipse (h.translated (0, 0.5f), 0.6f);
+        }
+        for (float x : { 22.0f, 78.0f })
+        {   // guide-pin openings
+            auto h = juce::Rectangle<float> (4.0f * u, 3.6f * u).withCentre (at (x, 60.0f));
+            g.setColour (juce::Colour (0xff050505)); g.fillRoundedRectangle (h, 0.6f * u);
+        }
+        { auto h = juce::Rectangle<float> (at (43.0f, 56.0f), at (57.0f, 63.0f)); g.setColour (juce::Colour (0xff050505)); g.fillRoundedRectangle (h, 0.6f * u); }
+        // five screws
+        for (auto p : { at (4.0f, 4.0f), at (96.0f, 4.0f), at (4.0f, 59.8f), at (96.0f, 59.8f), at (50.0f, 52.5f) })
+            screw (g, p, 1.6f * u, rnd.nextFloat() * 3.0f);
+    }
+
+    void paintCassette (juce::Graphics& g, const Geo& geo, double f, float tapePx)
+    {
+        const float u = geo.u;
+        const float hubR = 6.2f * u, packMin = 7.0f * u, packMax = 19.5f * u;
+        const float packL = (float) std::sqrt (packMin * packMin + (packMax * packMax - packMin * packMin) * (1.0 - f));
+        const float packR = (float) std::sqrt (packMin * packMin + (packMax * packMax - packMin * packMin) * f);
+        reelCentres[0] = geo.hubL; reelCentres[1] = geo.hubR2; reelRadius = packMax;
+        {
+            juce::Graphics::ScopedSaveState ss (g);
+            g.reduceClipRegion (geo.window);
+            auto wb = geo.window.getBounds();
+            // clear, slightly smoked plastic with the inside of the shell behind it
+            g.setGradientFill (juce::ColourGradient (juce::Colour (0xff2b2c30), wb.getX(), wb.getY(), juce::Colour (0xff121214), wb.getX(), wb.getBottom(), false));
+            g.fillRect (wb);
+            for (int side = 0; side < 2; ++side)
+            {
+                const auto c = side == 0 ? geo.hubL : geo.hubR2;
+                const float pk = side == 0 ? packL : packR;
+                const float ang = -tapePx * 0.6f / pk;
+                // tape pack
+                g.setGradientFill (juce::ColourGradient (juce::Colour (0xff6a4632), c.x - pk, c.y - pk, juce::Colour (0xff22140b), c.x + pk, c.y + pk, false));
+                g.fillEllipse (c.x - pk, c.y - pk, pk * 2, pk * 2);
+                for (float q = hubR + 1.5f; q < pk; q += 2.2f)
+                { g.setColour (juce::Colours::black.withAlpha (0.12f)); g.drawEllipse (c.x - q, c.y - q, q * 2, q * 2, 0.5f); }
+                g.setColour (juce::Colours::white.withAlpha (0.10f)); g.drawEllipse (c.x - pk + 1, c.y - pk + 1, pk * 2 - 2, pk * 2 - 2, 1.0f);
+                // white plastic hub with six teeth on the inside, turning
+                g.setGradientFill (juce::ColourGradient (juce::Colour (0xfff4f2ec), c.x - hubR, c.y - hubR, juce::Colour (0xffb9b5aa), c.x + hubR, c.y + hubR, false));
+                g.fillEllipse (c.x - hubR, c.y - hubR, hubR * 2, hubR * 2);
+                g.setColour (juce::Colours::black.withAlpha (0.35f)); g.drawEllipse (c.x - hubR, c.y - hubR, hubR * 2, hubR * 2, 0.8f);
+                const float inner = hubR * 0.62f;
+                g.setColour (juce::Colour (0xff0c0c0d)); g.fillEllipse (c.x - inner, c.y - inner, inner * 2, inner * 2);
+                for (int k = 0; k < 6; ++k)
+                {
+                    const float a = ang + k * juce::MathConstants<float>::twoPi / 6.0f;
+                    juce::Path tooth; tooth.addRectangle (-inner * 0.16f, -inner * 1.02f, inner * 0.32f, inner * 0.45f);
+                    tooth.applyTransform (juce::AffineTransform::rotation (a).translated (c.x, c.y));
+                    g.setColour (juce::Colour (0xffe4e1d8)); g.fillPath (tooth);
+                }
+            }
+            // the window's plastic: a soft reflection and inner shadow
+            g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.22f), wb.getX(), wb.getY(), juce::Colours::white.withAlpha (0.0f), wb.getX(), wb.getCentreY(), false));
+            g.fillRect (wb.withHeight (wb.getHeight() * 0.5f));
+            g.setColour (juce::Colours::black.withAlpha (0.5f)); g.strokePath (geo.window, juce::PathStrokeType (2.0f * u));
+        }
+        // the well's glass door: one long diagonal reflection
+        juce::Graphics::ScopedSaveState ss (g);
+        g.reduceClipRegion (geo.well.reduced (2.5f).toNearestInt());
+        juce::Path streak;
+        const auto w = geo.well;
+        streak.startNewSubPath (w.getX() + w.getWidth() * 0.18f, w.getY()); streak.lineTo (w.getX() + w.getWidth() * 0.34f, w.getY());
+        streak.lineTo (w.getX() + w.getWidth() * 0.12f, w.getBottom()); streak.lineTo (w.getX() - w.getWidth() * 0.04f, w.getBottom()); streak.closeSubPath();
+        g.setColour (juce::Colours::white.withAlpha (0.07f)); g.fillPath (streak);
+    }
+
+    // ---------------------------------------------------------------- small parts
     static void screw (juce::Graphics& g, juce::Point<float> c, float r, float slotAngle)
     {
         g.setColour (juce::Colours::black.withAlpha (0.4f)); g.fillEllipse (c.x - r - 0.5f, c.y - r + 0.8f, r * 2 + 1, r * 2 + 1);
@@ -1026,17 +1360,18 @@ private:
         g.setColour (juce::Colour (0xff3a3c3e));
         g.drawLine (c.x - std::cos (slotAngle) * r * 0.8f, c.y - std::sin (slotAngle) * r * 0.8f, c.x + std::cos (slotAngle) * r * 0.8f, c.y + std::sin (slotAngle) * r * 0.8f, 1.0f);
     }
-    static void chromeRoller (juce::Graphics& g, juce::Point<float> c, float r)
+    static void chromeRollerFace (juce::Graphics& g, juce::Point<float> c, float r)
     {
-        {
-            juce::Path sh; sh.addEllipse (c.x - r, c.y - r + 1.5f, r * 2, r * 2);
-            juce::DropShadow (juce::Colours::black.withAlpha (0.55f), 4, {}).drawForPath (g, sh);
-        }
         juce::ColourGradient cg (juce::Colour (0xffffffff), c.x - r * 0.5f, c.y - r * 0.6f, juce::Colour (0xff595d61), c.x + r * 0.6f, c.y + r * 0.8f, true);
         cg.addColour (0.5, juce::Colour (0xffb5b9bc));
         g.setGradientFill (cg); g.fillEllipse (c.x - r, c.y - r, r * 2, r * 2);
         g.setColour (juce::Colours::black.withAlpha (0.45f)); g.drawEllipse (c.x - r, c.y - r, r * 2, r * 2, 0.8f);
         g.setColour (juce::Colour (0xff4a4d50)); g.fillEllipse (c.x - r * 0.25f, c.y - r * 0.25f, r * 0.5f, r * 0.5f);
+    }
+    static void chromeRoller (juce::Graphics& g, juce::Point<float> c, float r)
+    {
+        { juce::Path sh; sh.addEllipse (c.x - r, c.y - r + 1.5f, r * 2, r * 2); juce::DropShadow (juce::Colours::black.withAlpha (0.55f), 4, {}).drawForPath (g, sh); }
+        chromeRollerFace (g, c, r);
     }
     static void chromeBox (juce::Graphics& g, juce::Rectangle<float> b, float corner)
     {
@@ -1058,27 +1393,60 @@ private:
         g.setColour (juce::Colours::white.withAlpha (0.6f)); g.fillEllipse (c.x - r * 0.5f, c.y - r * 0.6f, r * 0.6f, r * 0.45f);
     }
 
-    /** Cream backlit VU meter in a chrome bezel; `vuDb` is in VU (0 VU = -18 dBFS) */
-    static void drawVU (juce::Graphics& g, juce::Rectangle<float> b, float vuDb, bool lampOn, const juce::String& subtitle)
+    // ---------------------------------------------------------------- VU (face cached, needle live)
+    struct VuGeo { juce::Rectangle<float> face; juce::Point<float> pivot; float R, aMin = -0.62f, aMax = 0.62f; };
+    static VuGeo vuGeo (juce::Rectangle<float> b)
+    {
+        VuGeo v; v.face = b.reduced (4.0f);
+        v.pivot = { v.face.getCentreX(), v.face.getBottom() + v.face.getHeight() * 0.55f };
+        v.R = v.face.getHeight() * 1.5f;
+        return v;
+    }
+    static float vuFrac (float db)
+    {
+        auto lin = [] (float d) { return std::pow (10.0f, d / 20.0f); };
+        return juce::jlimit (0.0f, 1.0f, (lin (db) - lin (-20.0f)) / (lin (3.0f) - lin (-20.0f)));
+    }
+    void drawVU (juce::Graphics& g, juce::Rectangle<float> b, float scale)
+    {
+        const juce::String subtitle = on ? "VEGA TAPE  " + ipsText : juce::String ("BYPASSED");
+        const juce::String key = subtitle + (on ? "1" : "0");
+        const auto outer = b.expanded (8.0f);
+        if (vuFace.isNull() || vuKey != key)
+        {
+            vuKey = key;
+            vuFace = makeImage (outer.getWidth(), outer.getHeight(), scale);
+            juce::Graphics ig (vuFace); ig.addTransform (juce::AffineTransform::scale (scale).translated (0, 0));
+            ig.addTransform (juce::AffineTransform::translation (-outer.getX(), -outer.getY()));
+            paintVuFace (ig, b, on, subtitle);
+        }
+        g.drawImage (vuFace, outer);
+        const auto v = vuGeo (b);
+        juce::Graphics::ScopedSaveState ss (g);
+        g.reduceClipRegion (v.face.toNearestInt());
+        auto pt = [&] (float rad, float a) { return juce::Point<float> (v.pivot.x + std::sin (a) * rad, v.pivot.y - std::cos (a) * rad); };
+        const float a = v.aMin + vuFrac (vu) * (v.aMax - v.aMin) + (vu < -20.0f ? -0.06f : 0.0f);
+        g.setColour (juce::Colours::black.withAlpha (0.18f)); g.drawLine (juce::Line<float> (pt (v.R * 0.25f, a).translated (0.8f, 1.0f), pt (v.R * 0.95f, a).translated (0.8f, 1.0f)), 1.6f);
+        g.setColour (juce::Colour (0xff111111)); g.drawLine (juce::Line<float> (pt (v.R * 0.25f, a + 0.012f), pt (v.R * 0.95f, a + 0.012f)), 1.1f);
+        g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.35f), v.face.getX(), v.face.getY(), juce::Colours::white.withAlpha (0.0f), v.face.getX() + v.face.getWidth() * 0.45f, v.face.getBottom(), false));
+        g.fillRect (v.face.withWidth (v.face.getWidth() * 0.55f));
+        g.setColour (juce::Colours::black.withAlpha (0.25f)); g.drawRoundedRectangle (v.face, 2.0f, 1.5f);
+    }
+    static void paintVuFace (juce::Graphics& g, juce::Rectangle<float> b, bool lampOn, const juce::String& subtitle)
     {
         chromeBox (g, b, 4.0f);
-        auto face = b.reduced (4.0f);
+        const auto v = vuGeo (b);
+        const auto face = v.face;
         juce::ColourGradient fg (juce::Colour (0xfffbf3d9), face.getCentreX(), face.getY() + face.getHeight() * 0.3f, juce::Colour (0xffd9c99e), face.getX(), face.getBottom(), true);
         if (! lampOn) fg = juce::ColourGradient (juce::Colour (0xffc9c1a8), face.getCentreX(), face.getY(), juce::Colour (0xffa09678), face.getX(), face.getBottom(), true);
         g.setGradientFill (fg); g.fillRoundedRectangle (face, 2.0f);
         juce::Graphics::ScopedSaveState ss (g);
         g.reduceClipRegion (face.toNearestInt());
-        const juce::Point<float> pivot (face.getCentreX(), face.getBottom() + face.getHeight() * 0.55f);
-        const float R = face.getHeight() * 1.5f;
-        const float aMin = -0.62f, aMax = 0.62f;
-        auto lin = [] (float db) { return std::pow (10.0f, db / 20.0f); };
-        auto frac = [&] (float db) { return juce::jlimit (0.0f, 1.0f, (lin (db) - lin (-20.0f)) / (lin (3.0f) - lin (-20.0f))); };
-        auto angleOf = [&] (float db) { return aMin + frac (db) * (aMax - aMin); };
-        auto pt = [&] (float rad, float a) { return juce::Point<float> (pivot.x + std::sin (a) * rad, pivot.y - std::cos (a) * rad); };
-        // scale arcs: black, then red from 0 to +3
-        juce::Path arc; arc.addCentredArc (pivot.x, pivot.y, R * 0.78f, R * 0.78f, 0, angleOf (-20.0f), angleOf (0.0f), true);
+        auto angleOf = [&] (float db) { return v.aMin + vuFrac (db) * (v.aMax - v.aMin); };
+        auto pt = [&] (float rad, float a) { return juce::Point<float> (v.pivot.x + std::sin (a) * rad, v.pivot.y - std::cos (a) * rad); };
+        juce::Path arc; arc.addCentredArc (v.pivot.x, v.pivot.y, v.R * 0.78f, v.R * 0.78f, 0, angleOf (-20.0f), angleOf (0.0f), true);
         g.setColour (juce::Colour (0xff1d1a14)); g.strokePath (arc, juce::PathStrokeType (1.0f));
-        juce::Path red; red.addCentredArc (pivot.x, pivot.y, R * 0.785f, R * 0.785f, 0, angleOf (0.0f), angleOf (3.0f), true);
+        juce::Path red; red.addCentredArc (v.pivot.x, v.pivot.y, v.R * 0.785f, v.R * 0.785f, 0, angleOf (0.0f), angleOf (3.0f), true);
         g.setColour (juce::Colour (0xffc8261c)); g.strokePath (red, juce::PathStrokeType (2.6f));
         const float marks[] { -20, -10, -7, -5, -3, -2, -1, 0, 1, 2, 3 };
         g.setFont (VegaFonts::ui (6.5f, true));
@@ -1087,126 +1455,27 @@ private:
             const float a = angleOf (m);
             const bool major = m == -20 || m == -10 || m == -7 || m == -5 || m == -3 || m == 0 || m == 3;
             g.setColour (m > 0 ? juce::Colour (0xffc8261c) : juce::Colour (0xff1d1a14));
-            g.drawLine (juce::Line<float> (pt (R * 0.78f, a), pt (R * (major ? 0.9f : 0.85f), a)), major ? 1.1f : 0.8f);
+            g.drawLine (juce::Line<float> (pt (v.R * 0.78f, a), pt (v.R * (major ? 0.9f : 0.85f), a)), major ? 1.1f : 0.8f);
             if (major)
-                g.drawText (juce::String (std::abs ((int) m)), juce::Rectangle<float> (14.0f, 8.0f).withCentre (pt (R * 0.97f, a)), juce::Justification::centred);
+                g.drawText (juce::String (std::abs ((int) m)), juce::Rectangle<float> (14.0f, 8.0f).withCentre (pt (v.R * 0.97f, a)), juce::Justification::centred);
         }
         g.setColour (juce::Colour (0xff1d1a14)); g.setFont (juce::FontOptions ("Georgia", 9.0f, juce::Font::bold));
         g.drawText ("VU", juce::Rectangle<float> (30.0f, 10.0f).withCentre ({ face.getCentreX(), face.getBottom() - 11.0f }), juce::Justification::centred);
         g.setFont (VegaFonts::ui (5.5f, true));
-        g.drawText (subtitle, juce::Rectangle<float> (60.0f, 7.0f).withCentre ({ face.getCentreX(), face.getBottom() - 4.0f }), juce::Justification::centred);
-        // needle with a soft shadow
-        const float a = aMin + frac (vuDb) * (aMax - aMin) + (vuDb < -20.0f ? -0.06f : 0.0f);
-        g.setColour (juce::Colours::black.withAlpha (0.18f)); g.drawLine (juce::Line<float> (pt (R * 0.25f, a).translated (0.8f, 1.0f), pt (R * 0.95f, a).translated (0.8f, 1.0f)), 1.6f);
-        g.setColour (juce::Colour (0xff111111)); g.drawLine (juce::Line<float> (pt (R * 0.25f, a + 0.012f), pt (R * 0.95f, a + 0.012f)), 1.1f);
-        // glass: a diagonal reflection and darker corners
-        g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.35f), face.getX(), face.getY(), juce::Colours::white.withAlpha (0.0f), face.getX() + face.getWidth() * 0.45f, face.getBottom(), false));
-        g.fillRect (face.withWidth (face.getWidth() * 0.55f));
-        g.setColour (juce::Colours::black.withAlpha (0.25f)); g.drawRoundedRectangle (face, 2.0f, 1.5f);
-    }
-
-    /** A machined aluminium NAB-style reel: three cut-outs (the tape pack and the plate show through),
-        concentric tooling marks, a light streak that stays put while the reel turns, chrome hub. */
-    static void drawReel (juce::Graphics& g, juce::Point<float> c, float r, float hubR, float pack, float ang)
-    {
-        auto pt = [&] (float rad, float a) { return juce::Point<float> (c.x + std::sin (a) * rad, c.y - std::cos (a) * rad); };
-        // tape pack (behind the flange)
-        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff6a4632), c.x - pack, c.y - pack, juce::Colour (0xff22140b), c.x + pack, c.y + pack, false));
-        g.fillEllipse (c.x - pack, c.y - pack, pack * 2, pack * 2);
-        for (float rr = hubR * 1.1f; rr < pack; rr += 1.5f)
-        { g.setColour (juce::Colours::black.withAlpha (((int) (rr * 7.0f)) % 3 == 0 ? 0.2f : 0.08f)); g.drawEllipse (c.x - rr, c.y - rr, rr * 2, rr * 2, 0.5f); }
-        {
-            juce::Path sheen; sheen.addPieSegment (c.x - pack, c.y - pack, pack * 2, pack * 2, -1.0f, -0.25f, hubR * 1.1f / pack);
-            g.setColour (juce::Colours::white.withAlpha (0.12f)); g.fillPath (sheen);
-        }
-        g.setColour (juce::Colours::black.withAlpha (0.55f)); g.drawEllipse (c.x - pack, c.y - pack, pack * 2, pack * 2, 1.0f);
-
-        // flange with three windows (turning with the reel)
-        juce::Path flange; flange.addEllipse (c.x - r, c.y - r, r * 2, r * 2);
-        juce::Path windows;
-        for (int k = 0; k < 3; ++k)
-        {
-            const float a0 = ang + k * juce::MathConstants<float>::twoPi / 3.0f;
-            juce::Path w;
-            w.startNewSubPath (pt (hubR * 1.45f, a0 - 0.42f)); w.lineTo (pt (r * 0.87f, a0 - 0.62f));
-            w.lineTo (pt (r * 0.87f, a0 + 0.62f)); w.lineTo (pt (hubR * 1.45f, a0 + 0.42f)); w.closeSubPath();
-            windows.addPath (w.createPathWithRoundedCorners (r * 0.12f));
-        }
-        flange.setUsingNonZeroWinding (false); flange.addPath (windows);
-        {
-            juce::Path sh; sh.addEllipse (c.x - r, c.y - r + 4, r * 2, r * 2);
-            juce::DropShadow (juce::Colours::black.withAlpha (0.55f), 12, {}).drawForPath (g, sh);
-        }
-        juce::ColourGradient fg (juce::Colour (0xffe9ebec), c.x - r * 0.7f, c.y - r * 0.8f, juce::Colour (0xff7d8185), c.x + r * 0.8f, c.y + r * 0.9f, false);
-        fg.addColour (0.5, juce::Colour (0xffbfc2c5));
-        g.setGradientFill (fg); g.fillPath (flange);
-        {
-            juce::Graphics::ScopedSaveState ss (g);
-            g.reduceClipRegion (flange);
-            // concentric tooling marks
-            for (float rr = hubR; rr < r; rr += 1.3f)
-            {
-                g.setColour ((((int) (rr * 3.1f)) % 2 == 0 ? juce::Colours::white : juce::Colours::black).withAlpha (0.045f));
-                g.drawEllipse (c.x - rr, c.y - rr, rr * 2, rr * 2, 0.7f);
-            }
-            // anisotropic highlight: a bright "bow-tie" that stays fixed while the reel turns
-            for (float base : { -0.78f, 2.36f })
-            {
-                juce::Path wedge; wedge.addPieSegment (c.x - r, c.y - r, r * 2, r * 2, base - 0.32f, base + 0.32f, 0.0f);
-                g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.42f), c.x, c.y, juce::Colours::white.withAlpha (0.05f), pt (r, base).x, pt (r, base).y, true));
-                g.fillPath (wedge);
-            }
-            for (float base : { 0.78f, -2.36f })
-            {
-                juce::Path wedge; wedge.addPieSegment (c.x - r, c.y - r, r * 2, r * 2, base - 0.3f, base + 0.3f, 0.0f);
-                g.setColour (juce::Colours::black.withAlpha (0.10f)); g.fillPath (wedge);
-            }
-            // window edges: machined bevel (light on the upper-left, dark lower-right)
-            g.setColour (juce::Colours::white.withAlpha (0.55f)); g.strokePath (windows, juce::PathStrokeType (1.2f), juce::AffineTransform::translation (0.7f, 0.7f));
-            g.setColour (juce::Colours::black.withAlpha (0.55f)); g.strokePath (windows, juce::PathStrokeType (1.0f), juce::AffineTransform::translation (-0.6f, -0.6f));
-            // engraved maker's mark between two windows
-            g.addTransform (juce::AffineTransform::rotation (ang + juce::MathConstants<float>::pi / 3.0f, c.x, c.y));
-            g.setFont (juce::FontOptions ("Georgia", r * 0.15f, juce::Font::bold | juce::Font::italic));
-            auto tb = juce::Rectangle<float> (r * 0.8f, r * 0.18f).withCentre ({ c.x, c.y - r * 0.66f });
-            g.setColour (juce::Colours::white.withAlpha (0.6f)); g.drawText ("Vega", tb.translated (0, 0.8f), juce::Justification::centred);
-            g.setColour (juce::Colour (0xff4a4d50)); g.drawText ("Vega", tb, juce::Justification::centred);
-        }
-        // rim: rolled edge
-        g.setColour (juce::Colours::white.withAlpha (0.6f)); g.drawEllipse (c.x - r + 1.2f, c.y - r + 1.2f, r * 2 - 2.4f, r * 2 - 2.4f, 1.0f);
-        g.setColour (juce::Colour (0xff3d4043)); g.drawEllipse (c.x - r, c.y - r, r * 2, r * 2, 1.2f);
-        // chrome hub with three keys
-        {
-            juce::Path sh; sh.addEllipse (c.x - hubR, c.y - hubR + 2, hubR * 2, hubR * 2);
-            juce::DropShadow (juce::Colours::black.withAlpha (0.5f), 6, {}).drawForPath (g, sh);
-        }
-        juce::ColourGradient hg (juce::Colour (0xffffffff), c.x - hubR * 0.5f, c.y - hubR * 0.6f, juce::Colour (0xff5c6064), c.x + hubR * 0.6f, c.y + hubR * 0.8f, true);
-        hg.addColour (0.55, juce::Colour (0xffaeb2b5));
-        g.setGradientFill (hg); g.fillEllipse (c.x - hubR, c.y - hubR, hubR * 2, hubR * 2);
-        for (float rr = hubR * 0.3f; rr < hubR; rr += 1.2f)
-        { g.setColour (juce::Colours::black.withAlpha (0.05f)); g.drawEllipse (c.x - rr, c.y - rr, rr * 2, rr * 2, 0.5f); }
-        g.setColour (juce::Colours::black.withAlpha (0.5f)); g.drawEllipse (c.x - hubR, c.y - hubR, hubR * 2, hubR * 2, 0.8f);
-        for (int k = 0; k < 3; ++k)
-        {   // the three spindle keys
-            const float a = ang + juce::MathConstants<float>::pi / 3.0f + k * juce::MathConstants<float>::twoPi / 3.0f;
-            juce::Path key; key.addRoundedRectangle (-hubR * 0.12f, -hubR * 0.78f, hubR * 0.24f, hubR * 0.36f, hubR * 0.06f);
-            key.applyTransform (juce::AffineTransform::rotation (a).translated (c.x, c.y));
-            g.setColour (juce::Colour (0xff2b2d30)); g.fillPath (key);
-        }
-        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff2e3134), c.x, c.y - hubR * 0.3f, juce::Colour (0xff0d0e0f), c.x, c.y + hubR * 0.3f, false));
-        g.fillEllipse (c.x - hubR * 0.28f, c.y - hubR * 0.28f, hubR * 0.56f, hubR * 0.56f);   // spindle hole
-        g.setColour (juce::Colour (0xffd7dadc)); g.fillEllipse (c.x - hubR * 0.1f, c.y - hubR * 0.1f, hubR * 0.2f, hubR * 0.2f);
+        g.drawText (subtitle, juce::Rectangle<float> (70.0f, 7.0f).withCentre ({ face.getCentreX(), face.getBottom() - 4.0f }), juce::Justification::centred);
     }
 
     juce::Point<float> nearestReel (juce::Point<float> p) const { return p.getDistanceFrom (reelCentres[0]) < p.getDistanceFrom (reelCentres[1]) ? reelCentres[0] : reelCentres[1]; }
     float angleAt (juce::Point<float> p) const { const auto c = nearestReel (p); return std::atan2 (p.x - c.x, c.y - p.y); }
     double pos = 0, length = 60; bool playing = false, recording = false; juce::String counter { "1.1.1" };
     float vu = -30.0f, vuTarget = -30.0f;
-    juce::Image background; float backgroundScale = 1.0f;
+    int style = reelToReel;
+    juce::Image background, vuFace; juce::String vuKey; float backgroundScale = 1.0f;
 public:
     float ipsFactor = 1.0f; bool on = true; juce::String ipsText { "15 IPS" };
 private:
     juce::Point<float> reelCentres[2]; float reelRadius = 60.0f;
-    float lastAngle = 0, lastY = 0;
+    float lastAngle = 0, lastY = 0; bool dragging = false;
 };
 /** Brass machined knob on a black skirt with gold ticks (the tape machine's DRIVE / IPS / CAL) */
 class GoldKnob : public xl::Knob
@@ -1444,7 +1713,7 @@ public:
         canvas.addAndMakeVisible (deck); deck.setBounds (28, 404, 412, 168);
         deck.onTurn = [this] (double t) { jogTurn (t); };
         deck.onTouch = [this] (bool d) { if (! vs.edit().getTransport().isPlaying()) vs.edit().getTransport().setUserDragging (d); };
-        deck.setTooltip ("Vega Tape 2T on the master bus. Drag a reel (or use the wheel) to move the playhead - stopped, you hear the tape scrub.");
+        deck.setTooltip ("Vega Tape 2T on the master bus. Drag a reel (or use the wheel) to move the playhead - stopped, you hear the tape scrub. Right-click: reel to reel or cassette look.");
         static const char* tapeNames[] { "Drive", "IPS", "Cal" };
         for (int i = 0; i < 3; ++i)
         {
@@ -1663,7 +1932,7 @@ private:
                 const float db = client.getAndClearAudioLevel (c).dB;
                 const float vu = db - vuRef - 3.0f;                         // peak -> approx. average, referenced to 0 VU
                 const float target = juce::jlimit (-25.0f, 4.0f, db < -99 ? -25.0f : vu);
-                vuDb[c] += (target - vuDb[c]) * 0.18f;
+                vuDb[c] += (target - vuDb[c]) * (target > vuDb[c] ? 0.5f : 0.3f);
                 current[c] = db < -99 ? -100.0f : db;
                 if (current[c] > peak[c]) peak[c] = current[c];
             }
@@ -1683,7 +1952,17 @@ private:
             deck.setLevel (std::max (current[0], current[1]));
             deck.update (t.getPosition().inSeconds(), len, t.isPlaying(), t.isRecording(), dawui::formatBarsBeats (vs.edit(), t.getPosition()));
         }
-        canvas.repaint();
+        if (! deckStyleLoaded)
+        {   // the tape machine look (reel to reel / cassette) is remembered between sessions
+            deckStyleLoaded = true;
+            const auto file = vs.edit().engine.getPropertyStorage().getAppPrefsFolder().getChildFile ("VegaTapeLook.xml");
+            if (auto x = juce::XmlDocument::parse (file)) deck.setStyle (x->getIntAttribute ("style", 0));
+            deck.onStyleChanged = [file] (int st) { juce::XmlElement x ("VegaTapeLook"); x.setAttribute ("style", st); x.writeTo (file); };
+        }
+        // only the screen and encoder rings change every tick; the rest of the panel (and the tape deck under it)
+        // is left alone, so the meters keep up with the music
+        canvas.repaint (0, 60, canvas.getWidth(), 340);
+        if (++fullRepaintCounter >= 15) { fullRepaintCounter = 0; canvas.repaint(); }
     }
 
     // ---------------------------------------------------------------- drawing
@@ -1822,7 +2101,7 @@ private:
             cycle { uf::Key::loop, {}, juce::Colour (0xffffd98a) }, click { uf::Key::metro, {}, juce::Colour (0xffffd98a) }, drop { uf::Key::dropIn, {}, juce::Colour (0xffff8a7a) },
             shiftKey { uf::Key::shiftUp, {}, juce::Colour (0xffffd98a), false };
     uf::TransportKey rew { uf::TransportKey::rew }, ffwd { uf::TransportKey::ffwd }, stop { uf::TransportKey::stop }, play { uf::TransportKey::play }, rec { uf::TransportKey::rec };
-    tp::Jog jog; tp::TapeDeck deck;
+    tp::Jog jog; tp::TapeDeck deck; bool deckStyleLoaded = false; int fullRepaintCounter = 0;
     xl::Knob tapeKnob[3];          // the plug-ins' big black knobs, like the Vega Tape panel
     cs::SqButton tapeOn { "On", VegaColours::accent }, tapeBypass { "Bypass", VegaColours::accent };
     cs::ComboButton tapePreset;
